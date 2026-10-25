@@ -47,6 +47,11 @@ def connect_db() -> sqlite3.Connection:
         lambda value: str(value).casefold() if value is not None else "",
         deterministic=True,
     )
+    connection.create_function(
+        "normalize_event_title", 1,
+        lambda value: " ".join(str(value).casefold().split()) if value is not None else "",
+        deterministic=True,
+    )
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA busy_timeout = 10000")
     return connection
@@ -568,19 +573,19 @@ def potential_duplicates(
                 "candidates": [],
                 "message": "No candidates suggested because this event has no source_ip.",
             }
+        now = datetime.now(timezone.utc).isoformat()
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
-        rows = db.execute(
-            """SELECT * FROM security_events
-               WHERE id != ? AND source = ? AND event_type = ? AND source_ip = ?
-                 AND created_at >= ?
-               ORDER BY id DESC LIMIT ?""",
-            (event_id, event["source"], event["event_type"], event["source_ip"], cutoff, min(1000, limit * 10)),
-        ).fetchall()
-        normalized_title = " ".join(event["title"].casefold().split())
         candidates = [
-            row_to_event(row) for row in rows
-            if " ".join(row["title"].casefold().split()) == normalized_title
-        ][:limit]
+            row_to_event(row) for row in db.execute(
+                """SELECT * FROM security_events
+                   WHERE id != ? AND source = ? AND event_type = ? AND source_ip = ?
+                     AND normalize_event_title(title) = normalize_event_title(?)
+                     AND created_at >= ? AND created_at <= ?
+                   ORDER BY created_at DESC, id DESC LIMIT ?""",
+                (event_id, event["source"], event["event_type"], event["source_ip"],
+                 event["title"], cutoff, now, limit),
+            ).fetchall()
+        ]
         return {
             "event_id": event_id,
             "window_minutes": window_minutes,
