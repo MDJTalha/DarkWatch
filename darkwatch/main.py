@@ -197,17 +197,19 @@ def configured_analysts() -> list[dict[str, str]] | None:
     if not isinstance(entries, list) or not entries:
         raise HTTPException(status_code=503, detail="Named API token configuration must be a non-empty JSON array.")
     seen_users: set[str] = set()
+    seen_tokens: set[str] = set()
     normalized: list[dict[str, str]] = []
     for entry in entries:
         if not isinstance(entry, dict):
             raise HTTPException(status_code=503, detail="Named API token configuration is invalid.")
         token, username, role = entry.get("token"), entry.get("username"), entry.get("role")
-        if not isinstance(token, str) or len(token) < 24 or not isinstance(username, str) or not username.strip() or len(username) > 100 or role not in ALLOWED_ROLES:
+        if not isinstance(token, str) or len(token) < 24 or not isinstance(username, str) or not username.strip() or len(username) > 100 or not isinstance(role, str) or role not in ALLOWED_ROLES:
             raise HTTPException(status_code=503, detail="Each named API identity requires a token of at least 24 characters, username, and supported role.")
         username = username.strip()
-        if username in seen_users:
-            raise HTTPException(status_code=503, detail="Named API usernames must be unique.")
+        if username in seen_users or token in seen_tokens:
+            raise HTTPException(status_code=503, detail="Named API usernames and tokens must be unique.")
         seen_users.add(username)
+        seen_tokens.add(token)
         normalized.append({"token": token, "username": username, "role": role})
     return normalized
 
@@ -258,6 +260,72 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="DarkWatch API", description="Defensive security event ingestion and triage foundation.",
               version=APP_VERSION, lifespan=lifespan)
+
+
+class RequestBodyLimitMiddleware:
+    """Enforce a hard cap while receiving request chunks, including chunked requests."""
+
+    def __init__(self, app, max_body_bytes: int = 16 * 1024):
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") not in {"POST", "PUT", "PATCH"}:
+            await self.app(scope, receive, send)
+            return
+
+        content_length = next(
+            (value for key, value in scope.get("headers", []) if key.lower() == b"content-length"),
+            None,
+        )
+        if content_length is not None:
+            try:
+                if int(content_length) > self.max_body_bytes:
+                    body = b'{"detail":"Request body exceeds 16384-byte limit."}'
+                    await send({"type": "http.response.start", "status": 413,
+                                "headers": [(b"content-type", b"application/json"),
+                                            (b"content-length", str(len(body)).encode("ascii"))]})
+                    await send({"type": "http.response.body", "body": body})
+                    return
+            except ValueError:
+                body = b'{"detail":"Invalid Content-Length header."}'
+                await send({"type": "http.response.start", "status": 400,
+                            "headers": [(b"content-type", b"application/json"),
+                                        (b"content-length", str(len(body)).encode("ascii"))]})
+                await send({"type": "http.response.body", "body": body})
+                return
+
+        received = 0
+        too_large = False
+        response_started = False
+        too_large_body = b'{"detail":"Request body exceeds 16384-byte limit."}'
+
+        async def limited_receive():
+            nonlocal received, too_large
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_body_bytes:
+                    too_large = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return message
+
+        async def limited_send(message):
+            nonlocal response_started
+            if too_large:
+                if message["type"] == "http.response.start" and not response_started:
+                    response_started = True
+                    await send({"type": "http.response.start", "status": 413,
+                                "headers": [(b"content-type", b"application/json"),
+                                            (b"content-length", str(len(too_large_body)).encode("ascii"))]})
+                elif message["type"] == "http.response.body" and response_started:
+                    await send({"type": "http.response.body", "body": too_large_body, "more_body": False})
+                return
+            await send(message)
+
+        await self.app(scope, limited_receive, limited_send)
+
+app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=16 * 1024)
 
 
 @app.middleware("http")
