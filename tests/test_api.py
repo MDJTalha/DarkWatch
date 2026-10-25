@@ -179,6 +179,34 @@ def test_blank_note_and_notes_for_missing_event_rejected(client):
     assert missing.status_code == 404
 
 
+
+def test_event_pagination_uses_offset(client):
+    first = create_event(client, title="First event")
+    second = create_event(client, title="Second event")
+    third = create_event(client, title="Third event")
+
+    response = client.get("/api/v1/events?limit=1&offset=1", headers=auth())
+
+    assert response.status_code == 200
+    assert [event["id"] for event in response.json()] == [second["id"]]
+
+
+def test_unicode_case_insensitive_search(client):
+    create_event(client, title="Überwachung fehlgeschlagen", event_type="suspicious_process")
+
+    response = client.get("/api/v1/events?q=überwachung", headers=auth())
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["title"] == "Überwachung fehlgeschlagen"
+
+
+def test_event_pagination_rejects_negative_offset(client):
+    response = client.get("/api/v1/events?offset=-1", headers=auth())
+
+    assert response.status_code == 422
+
+
 def test_old_database_schema_is_migrated(tmp_path, monkeypatch):
     import sqlite3
     db_path = tmp_path / "old.db"
