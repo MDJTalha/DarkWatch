@@ -51,8 +51,22 @@ Only monitor systems and logs you are authorized to monitor. This release accept
 |---|---|---|---|
 | GET | /health | Public | Minimal liveness check |
 | POST | /api/v1/events | Bearer token | Ingest normalized event |
-| GET | /api/v1/events | Bearer token | List recent events |
-| GET | /api/v1/summary | Bearer token | Severity and triage-status counts |\n| PATCH | /api/v1/events/{id}/status | Bearer token | Update triage status |\n| POST | /api/v1/events/{id}/notes | Bearer token | Add analyst note |\n| GET | /api/v1/events/{id}/notes | Bearer token | List analyst notes |\n| GET | /dashboard | Local operator UI | Dashboard; API calls require bearer token |
+| GET | /api/v1/events | Bearer token | List events; supports limit, offset, severity, triage_status, event_type, and q filters |
+| GET | /api/v1/summary | Bearer token | Severity and triage-status counts |
+| PATCH | /api/v1/events/{id}/status | Bearer token | Update triage status |
+| POST | /api/v1/events/{id}/notes | Bearer token | Add analyst note |
+| GET | /api/v1/events/{id}/notes | Bearer token | List analyst notes |
+| GET | /dashboard | Local operator UI | Dashboard; API calls require bearer token |
+
+Event-list query parameters:
+- `limit`: 1–200 results per request (default 50).
+- `offset`: zero-based pagination offset (default 0).
+- `severity`: optional severity filter.
+- `triage_status`: optional `new`, `investigating`, or `resolved` filter.
+- `event_type`: optional event-type filter; surrounding whitespace and letter case are normalized.
+- `q`: optional case-insensitive search across title, source, and description. Unicode case-folding is used for non-ASCII text.
+
+The dashboard applies these filters on the server and provides Previous/Next pagination. Summary counts cover all stored events, not just the current page.
 
 Allowed event types: failed_login, malware_detected, suspicious_process, firewall_block, configuration_change, data_exfiltration_suspected, and other. Classification is a starter rule, not proof an incident occurred.
 
