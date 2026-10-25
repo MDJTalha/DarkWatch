@@ -707,3 +707,81 @@ def test_invalid_named_identity_configuration_fails_closed(client, monkeypatch, 
     monkeypatch.setenv("DARKWATCH_API_TOKENS", json.dumps(entries))
     response = client.get("/api/v1/events", headers=auth())
     assert response.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    [
+        "Basic abcdefghijklmnopqrstuvwxyz",
+        "Bearer",
+        "bearer lowercase-scheme-token-value",
+        "Bearer  token-with-leading-space-value",
+    ],
+)
+def test_authentication_rejects_malformed_authorization_scheme(client, authorization):
+    response = client.get("/api/v1/events", headers={"Authorization": authorization})
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_request_body_limit_rejects_invalid_content_length_without_calling_app():
+    import asyncio
+    from darkwatch.main import RequestBodyLimitMiddleware
+
+    called = False
+
+    async def downstream(scope, receive, send):
+        nonlocal called
+        called = True
+
+    messages = []
+    async def receive():
+        raise AssertionError("receive should not be called for an invalid Content-Length")
+
+    async def send(message):
+        messages.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "headers": [(b"content-length", b"not-a-number")],
+    }
+    middleware = RequestBodyLimitMiddleware(downstream, max_body_bytes=16)
+    asyncio.run(middleware(scope, receive, send))
+
+    assert called is False
+    assert messages[0]["type"] == "http.response.start"
+    assert messages[0]["status"] == 400
+    assert b"Invalid Content-Length" in messages[1]["body"]
+
+
+def test_request_body_limit_accepts_body_at_exact_limit(client):
+    # The request body itself must fit the cap; test the middleware boundary
+    # independently from the endpoint's smaller semantic field limits.
+    import asyncio
+    from darkwatch.main import RequestBodyLimitMiddleware
+
+    payload = b"x" * 16
+    messages = [
+        {"type": "http.request", "body": payload, "more_body": False},
+    ]
+    sent = []
+
+    async def receive():
+        return messages.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    async def downstream(scope, receive, send):
+        message = await receive()
+        assert message["body"] == payload
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    scope = {"type": "http", "method": "POST", "headers": []}
+    middleware = RequestBodyLimitMiddleware(downstream, max_body_bytes=16)
+    asyncio.run(middleware(scope, receive, send))
+
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 204
