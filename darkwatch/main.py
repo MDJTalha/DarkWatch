@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -81,8 +81,11 @@ def init_db() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS idx_events_event_type ON security_events(event_type)")
         db.execute("""CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, event_id INTEGER,
-            created_at TEXT NOT NULL,
+            created_at TEXT NOT NULL, actor TEXT NOT NULL DEFAULT 'legacy',
             FOREIGN KEY(event_id) REFERENCES security_events(id))""")
+        audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_log)")}
+        if "actor" not in audit_columns:
+            db.execute("ALTER TABLE audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT 'legacy'")
         db.execute("""CREATE TABLE IF NOT EXISTS analyst_notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
             note TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -179,14 +182,62 @@ class SummaryOut(BaseModel):
     by_status: dict[str, int]
 
 
-def require_api_token(authorization: str | None = Header(default=None)) -> None:
-    configured = os.getenv("DARKWATCH_API_TOKEN", "")
-    if len(configured) < 24:
-        raise HTTPException(status_code=503, detail="API authentication is not configured with a sufficiently long token.")
-    expected = f"Bearer {configured}".encode("utf-8")
-    supplied = authorization.encode("utf-8") if authorization is not None else b""
-    if not hmac.compare_digest(supplied, expected):
+ALLOWED_ROLES = {"admin", "analyst", "ingestor", "viewer"}
+
+
+def configured_analysts() -> list[dict[str, str]] | None:
+    """Load named identities from a secret-injected JSON array; never log token values."""
+    raw = os.getenv("DARKWATCH_API_TOKENS")
+    if raw is None:
+        return None
+    try:
+        entries = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="Named API token configuration is invalid.") from exc
+    if not isinstance(entries, list) or not entries:
+        raise HTTPException(status_code=503, detail="Named API token configuration must be a non-empty JSON array.")
+    seen_users: set[str] = set()
+    normalized: list[dict[str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise HTTPException(status_code=503, detail="Named API token configuration is invalid.")
+        token, username, role = entry.get("token"), entry.get("username"), entry.get("role")
+        if not isinstance(token, str) or len(token) < 24 or not isinstance(username, str) or not username.strip() or len(username) > 100 or role not in ALLOWED_ROLES:
+            raise HTTPException(status_code=503, detail="Each named API identity requires a token of at least 24 characters, username, and supported role.")
+        username = username.strip()
+        if username in seen_users:
+            raise HTTPException(status_code=503, detail="Named API usernames must be unique.")
+        seen_users.add(username)
+        normalized.append({"token": token, "username": username, "role": role})
+    return normalized
+
+
+def require_api_token(request: Request, authorization: str | None = Header(default=None)) -> dict[str, str]:
+    named = configured_analysts()
+    supplied = authorization.removeprefix("Bearer ") if authorization and authorization.startswith("Bearer ") else ""
+    identity = None
+    if named is not None:
+        for entry in named:
+            if hmac.compare_digest(supplied.encode("utf-8"), entry["token"].encode("utf-8")):
+                identity = {"username": entry["username"], "role": entry["role"]}
+    else:
+        configured = os.getenv("DARKWATCH_API_TOKEN", "")
+        if len(configured) < 24:
+            raise HTTPException(status_code=503, detail="API authentication is not configured with a sufficiently long token.")
+        if hmac.compare_digest(supplied.encode("utf-8"), configured.encode("utf-8")):
+            identity = {"username": "legacy-shared-token", "role": "admin"}
+    if identity is None:
         raise HTTPException(status_code=401, detail="Invalid or missing bearer token.", headers={"WWW-Authenticate": "Bearer"})
+    request.state.analyst = identity
+    return identity
+
+
+def require_roles(*roles: str):
+    def dependency(identity: dict[str, str] = Depends(require_api_token)) -> dict[str, str]:
+        if identity["role"] not in roles:
+            raise HTTPException(status_code=403, detail="Insufficient role for this operation.")
+        return identity
+    return dependency
 
 
 def row_to_event(row: sqlite3.Row) -> dict[str, Any]:
@@ -273,7 +324,7 @@ el('auth').addEventListener('submit',async e=>{e.preventDefault();token=el('toke
 
 
 @app.post("/api/v1/events", response_model=EventOut, status_code=201, tags=["events"], dependencies=[Depends(require_api_token)])
-def ingest_event(payload: EventIn) -> dict[str, Any]:
+def ingest_event(payload: EventIn, identity: dict[str, str] = Depends(require_roles("admin", "analyst", "ingestor"))) -> dict[str, Any]:
     severity = SEVERITY_BY_TYPE[payload.event_type]
     created_at = utc_now()
     with db_session() as db:
@@ -283,7 +334,7 @@ def ingest_event(payload: EventIn) -> dict[str, Any]:
             (payload.source,payload.event_type,payload.title,payload.description,payload.source_ip,
              severity,json.dumps(payload.metadata,ensure_ascii=True,separators=(",",":")),created_at))
         event_id = int(cursor.lastrowid)
-        db.execute("INSERT INTO audit_log(action,event_id,created_at) VALUES (?,?,?)",("event.ingested",event_id,created_at))
+        db.execute("INSERT INTO audit_log(action,event_id,created_at,actor) VALUES (?,?,?,?)",("event.ingested",event_id,created_at,identity["username"]))
         return row_to_event(get_event(db,event_id))
 
 
@@ -317,23 +368,23 @@ def list_events(
 
 
 @app.patch("/api/v1/events/{event_id}/status", response_model=EventOut, tags=["triage"], dependencies=[Depends(require_api_token)])
-def update_status(event_id: int, payload: StatusUpdate) -> dict[str, Any]:
+def update_status(event_id: int, payload: StatusUpdate, identity: dict[str, str] = Depends(require_roles("admin", "analyst"))) -> dict[str, Any]:
     now = utc_now()
     with db_session() as db:
         get_event(db,event_id)
         db.execute("UPDATE security_events SET triage_status = ? WHERE id = ?",(payload.triage_status,event_id))
-        db.execute("INSERT INTO audit_log(action,event_id,created_at) VALUES (?,?,?)",(f"event.status.{payload.triage_status}",event_id,now))
+        db.execute("INSERT INTO audit_log(action,event_id,created_at,actor) VALUES (?,?,?,?)",(f"event.status.{payload.triage_status}",event_id,now,identity["username"]))
         return row_to_event(get_event(db,event_id))
 
 
 @app.post("/api/v1/events/{event_id}/notes", response_model=NoteOut, status_code=201, tags=["triage"], dependencies=[Depends(require_api_token)])
-def add_note(event_id: int, payload: NoteIn) -> dict[str, Any]:
+def add_note(event_id: int, payload: NoteIn, identity: dict[str, str] = Depends(require_roles("admin", "analyst"))) -> dict[str, Any]:
     now = utc_now()
     with db_session() as db:
         get_event(db,event_id)
         cursor = db.execute("INSERT INTO analyst_notes(event_id,note,created_at) VALUES (?,?,?)",(event_id,payload.note,now))
         note_id = int(cursor.lastrowid)
-        db.execute("INSERT INTO audit_log(action,event_id,created_at) VALUES (?,?,?)",("event.note.added",event_id,now))
+        db.execute("INSERT INTO audit_log(action,event_id,created_at,actor) VALUES (?,?,?,?)",("event.note.added",event_id,now,identity["username"]))
         row = db.execute("SELECT * FROM analyst_notes WHERE id = ?",(note_id,)).fetchone()
         return dict(row)
 
