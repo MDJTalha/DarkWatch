@@ -8,7 +8,7 @@ Defensive security monitoring and threat-intelligence platform, built in verifia
 - FastAPI service with a minimal health endpoint.
 - SQLite persistence for normalized security events and audit records.
 - Authenticated event ingestion and authenticated event/summary reads.
-- Input validation, bounded fields, parameterized SQL, and constant-time API-token comparison.
+- Input validation, bounded fields, IPv4/IPv6 source-address validation and canonicalization, parameterized SQL, and constant-time API-token comparison.
 - Deterministic starter severity classification and automated API tests.
 - GitHub Actions CI.
 
