@@ -7,7 +7,7 @@ Defensive security monitoring and threat-intelligence platform, built in verifia
 ## Phase 1 scope
 - FastAPI service with a minimal health endpoint.
 - SQLite persistence for normalized security events and audit records.
-- Authenticated event ingestion and authenticated event/summary reads.
+- Authenticated event ingestion and event/summary reads; optional named tokens with roles (`admin`, `analyst`, `ingestor`, `viewer`) and actor-attributed audit rows.
 - Input validation, bounded fields, IPv4/IPv6 source-address validation and canonicalization, parameterized SQL, and constant-time API-token comparison.
 - Baseline HTTP security headers; the dashboard sets a restrictive Content Security Policy and API/dashboard responses disable caching.
 - Deterministic starter severity classification and automated API tests.
@@ -23,7 +23,7 @@ Python 3.11 or newer. Windows, macOS, or Linux.
     pip install -r requirements.txt
     Copy-Item .env.example .env
 
-Set a strong local API token before starting the server:
+Set a strong local API token before starting the server (legacy compatibility mode):
 
     $env:DARKWATCH_API_TOKEN = "replace-with-a-long-random-secret"
     $env:DARKWATCH_DB_PATH = ".\data\darkwatch.db"
@@ -46,6 +46,14 @@ Open http://127.0.0.1:8000/health for liveness and http://127.0.0.1:8000/docs fo
     Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/summary" -Headers $headers
 
 Only monitor systems and logs you are authorized to monitor. This release accepts events submitted by an operator or trusted integration; it does not autonomously scan or collect data.
+
+## Authentication and roles
+
+For named identities, set `DARKWATCH_API_TOKENS` to a protected JSON array, for example:
+
+    $env:DARKWATCH_API_TOKENS = '[{"token":"replace-with-a-random-secret-at-least-24-chars","username":"talha-admin","role":"admin"},{"token":"replace-with-another-random-secret","username":"analyst-one","role":"analyst"},{"token":"replace-with-a-third-random-secret","username":"read-only","role":"viewer"}]'
+
+Each token must be at least 24 characters and usernames must be unique. Supported roles are `admin`, `analyst`, `ingestor`, and `viewer`. Admins and analysts can ingest and triage; ingestors can submit events; viewers can only read. All authenticated roles can read events and summaries. When `DARKWATCH_API_TOKENS` is configured, the legacy `DARKWATCH_API_TOKEN` is ignored. Without named-token configuration, the legacy shared token remains temporarily supported and has administrator-equivalent access. Use secret injection for real deployments and do not commit tokens.
 
 ## API
 | Method | Endpoint | Access | Purpose |
