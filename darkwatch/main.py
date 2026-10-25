@@ -573,6 +573,20 @@ def list_notes(event_id: int) -> list[dict[str, Any]]:
         return [dict(r) for r in db.execute("SELECT * FROM analyst_notes WHERE event_id = ? ORDER BY id ASC",(event_id,)).fetchall()]
 
 
+@app.get("/api/v1/audit/verify", tags=["audit"])
+def audit_verify(identity: dict[str, str] = Depends(require_roles("admin"))) -> dict[str, Any]:
+    """Verify the audit hash chain; restricted to administrators due to full-table scan."""
+    with db_session() as db:
+        valid, first_bad_row_id = verify_audit_chain(db)
+        entries_checked = db.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    return {
+        "valid": valid,
+        "first_invalid_row_id": first_bad_row_id,
+        "entries_checked": entries_checked,
+        "checked_at": utc_now(),
+    }
+
+
 @app.get("/api/v1/summary", response_model=SummaryOut, tags=["analytics"], dependencies=[Depends(require_api_token)])
 def summary() -> dict[str, Any]:
     with db_session() as db:
