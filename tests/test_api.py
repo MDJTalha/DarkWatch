@@ -4,17 +4,19 @@ from fastapi.testclient import TestClient
 from darkwatch import main
 
 
+TOKEN = "test-token-that-is-at-least-24-chars"
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    monkeypatch.setenv("DARKWATCH_API_TOKEN", "test-token-that-is-at-least-24-chars")
+    monkeypatch.setenv("DARKWATCH_API_TOKEN", TOKEN)
     monkeypatch.setenv("DARKWATCH_DB_PATH", str(tmp_path / "test.db"))
-    main.init_db()
     with TestClient(main.app) as test_client:
         yield test_client
 
 
 def auth():
-    return {"Authorization": "Bearer test-token-that-is-at-least-24-chars"}
+    return {"Authorization": f"Bearer {TOKEN}"}
 
 
 def sample_event(**overrides):
@@ -41,6 +43,12 @@ def test_ingest_requires_authentication(client):
     assert client.post("/api/v1/events", json=sample_event()).status_code == 401
 
 
+def test_missing_or_short_server_token_fails_closed(client, monkeypatch):
+    monkeypatch.setenv("DARKWATCH_API_TOKEN", "short")
+    response = client.get("/api/v1/events", headers=auth())
+    assert response.status_code == 503
+
+
 def test_ingest_and_read_event(client):
     created = client.post("/api/v1/events", headers=auth(), json=sample_event())
     assert created.status_code == 201
@@ -51,6 +59,16 @@ def test_ingest_and_read_event(client):
     assert listed.status_code == 200
     assert len(listed.json()) == 1
     assert listed.json()[0]["id"] == event["id"]
+
+
+def test_ingestion_creates_audit_record(client):
+    created = client.post("/api/v1/events", headers=auth(), json=sample_event())
+    assert created.status_code == 201
+    with main.db_session() as db:
+        rows = db.execute("SELECT action, event_id FROM audit_log").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["action"] == "event.ingested"
+    assert rows[0]["event_id"] == created.json()["id"]
 
 
 def test_summary_counts_events_by_severity(client):
@@ -73,6 +91,12 @@ def test_invalid_event_type_is_rejected(client):
 
 def test_unknown_fields_are_rejected(client):
     response = client.post("/api/v1/events", headers=auth(), json=sample_event(unexpected="nope"))
+    assert response.status_code == 422
+
+
+def test_metadata_size_is_bounded(client):
+    response = client.post("/api/v1/events", headers=auth(), json=sample_event(
+        metadata={"large": "x" * 9000}))
     assert response.status_code == 422
 
 
