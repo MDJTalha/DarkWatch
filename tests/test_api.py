@@ -540,4 +540,4 @@ def test_request_body_limit_rejects_oversized_stream_without_content_length():
     asyncio.run(middleware(scope, receive, send))
     assert sent[0]["type"] == "http.response.start"
     assert sent[0]["status"] == 413
-    assert b"16384-byte limit" in sent[1]["body"]
+    assert b"16-byte limit" in sent[1]["body"]
