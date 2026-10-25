@@ -121,7 +121,7 @@ def init_db() -> None:
         applied = {
             row["version"] for row in db.execute("SELECT version FROM schema_migrations")
         }
-        latest_supported_version = 5
+        latest_supported_version = 6
         if applied and max(applied) > latest_supported_version:
             raise RuntimeError(
                 f"Database schema version {max(applied)} is newer than this application "
@@ -213,6 +213,26 @@ def init_db() -> None:
                 (5, utc_now()),
             )
 
+        applied = {
+            row["version"] for row in db.execute("SELECT version FROM schema_migrations")
+        }
+        if 6 not in applied:
+            db.execute("""CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER NOT NULL UNIQUE,
+                severity TEXT NOT NULL CHECK (severity IN ('high', 'critical')),
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'acknowledged')),
+                created_at TEXT NOT NULL,
+                acknowledged_at TEXT,
+                acknowledged_by TEXT,
+                FOREIGN KEY(event_id) REFERENCES security_events(id) ON DELETE CASCADE
+            )""")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_alerts_status_created ON alerts(status, created_at DESC)")
+            db.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (6, utc_now()),
+            )
+
 
 class EventIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -301,6 +321,11 @@ class SummaryOut(BaseModel):
     total_events: int
     by_severity: dict[str, int]
     by_status: dict[str, int]
+
+
+class AlertStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["acknowledged"]
 
 
 ALLOWED_ROLES = {"admin", "analyst", "ingestor", "viewer"}
@@ -523,6 +548,12 @@ def ingest_event(payload: EventIn, identity: dict[str, str] = Depends(require_ro
              severity,json.dumps(payload.metadata,ensure_ascii=True,separators=(",",":")),created_at))
         event_id = int(cursor.lastrowid)
         append_audit(db, "event.ingested", event_id, created_at, identity["username"])
+        if severity in {"high", "critical"}:
+            db.execute(
+                "INSERT INTO alerts(event_id, severity, status, created_at) VALUES (?, ?, 'open', ?)",
+                (event_id, severity, created_at),
+            )
+            append_audit(db, "alert.created", event_id, created_at, identity["username"])
         return row_to_event(get_event(db,event_id))
 
 
@@ -622,6 +653,57 @@ def list_notes(event_id: int) -> list[dict[str, Any]]:
     with db_session() as db:
         get_event(db,event_id)
         return [dict(r) for r in db.execute("SELECT * FROM analyst_notes WHERE event_id = ? ORDER BY id ASC",(event_id,)).fetchall()]
+
+
+@app.get("/api/v1/alerts", tags=["alerts"], dependencies=[Depends(require_api_token)])
+def list_alerts(
+    status_filter: Literal["open", "acknowledged"] | None = Query(default=None, alias="status"),
+    severity: Literal["high", "critical"] | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0, le=10000000),
+) -> list[dict[str, Any]]:
+    """List generated alerts; this endpoint does not represent external notification delivery."""
+    sql = """SELECT a.id, a.event_id, a.severity, a.status, a.created_at,
+                    a.acknowledged_at, a.acknowledged_by,
+                    e.title, e.source, e.event_type, e.source_ip, e.triage_status
+             FROM alerts a JOIN security_events e ON e.id = a.event_id WHERE 1=1"""
+    params: list[Any] = []
+    if status_filter:
+        sql += " AND a.status = ?"; params.append(status_filter)
+    if severity:
+        sql += " AND a.severity = ?"; params.append(severity)
+    sql += " ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    with db_session() as db:
+        return [dict(row) for row in db.execute(sql, params).fetchall()]
+
+
+@app.patch("/api/v1/alerts/{alert_id}", tags=["alerts"], dependencies=[Depends(require_api_token)])
+def acknowledge_alert(
+    alert_id: int,
+    payload: AlertStatusUpdate,
+    identity: dict[str, str] = Depends(require_roles("admin", "analyst")),
+) -> dict[str, Any]:
+    """Acknowledge an alert without resolving or modifying its source event."""
+    now = utc_now()
+    with db_session() as db:
+        alert = db.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,)).fetchone()
+        if alert is None:
+            raise HTTPException(status_code=404, detail="Alert not found.")
+        if alert["status"] == "open":
+            db.execute(
+                "UPDATE alerts SET status = 'acknowledged', acknowledged_at = ?, acknowledged_by = ? WHERE id = ?",
+                (now, identity["username"], alert_id),
+            )
+            append_audit(db, "alert.acknowledged", alert["event_id"], now, identity["username"])
+        updated = db.execute(
+            """SELECT a.id, a.event_id, a.severity, a.status, a.created_at,
+                      a.acknowledged_at, a.acknowledged_by,
+                      e.title, e.source, e.event_type, e.source_ip, e.triage_status
+               FROM alerts a JOIN security_events e ON e.id = a.event_id WHERE a.id = ?""",
+            (alert_id,),
+        ).fetchone()
+        return dict(updated)
 
 
 @app.get("/api/v1/audit/verify", tags=["audit"])
