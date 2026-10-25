@@ -65,32 +65,70 @@ def db_session() -> Iterator[sqlite3.Connection]:
 
 
 def init_db() -> None:
+    """Apply explicit, idempotent schema migrations in a single transaction."""
     with db_session() as db:
-        db.execute("""CREATE TABLE IF NOT EXISTS security_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL, event_type TEXT NOT NULL, title TEXT NOT NULL,
-            description TEXT NOT NULL, source_ip TEXT, severity TEXT NOT NULL,
-            metadata_json TEXT NOT NULL, created_at TEXT NOT NULL,
-            triage_status TEXT NOT NULL DEFAULT 'new')""")
-        columns = {row["name"] for row in db.execute("PRAGMA table_info(security_events)")}
-        if "triage_status" not in columns:
-            db.execute("ALTER TABLE security_events ADD COLUMN triage_status TEXT NOT NULL DEFAULT 'new'")
-        db.execute("CREATE INDEX IF NOT EXISTS idx_events_created_at ON security_events(created_at DESC)")
-        db.execute("CREATE INDEX IF NOT EXISTS idx_events_severity ON security_events(severity)")
-        db.execute("CREATE INDEX IF NOT EXISTS idx_events_status ON security_events(triage_status)")
-        db.execute("CREATE INDEX IF NOT EXISTS idx_events_event_type ON security_events(event_type)")
-        db.execute("""CREATE TABLE IF NOT EXISTS audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, event_id INTEGER,
-            created_at TEXT NOT NULL, actor TEXT NOT NULL DEFAULT 'legacy',
-            FOREIGN KEY(event_id) REFERENCES security_events(id))""")
-        audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_log)")}
-        if "actor" not in audit_columns:
-            db.execute("ALTER TABLE audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT 'legacy'")
-        db.execute("""CREATE TABLE IF NOT EXISTS analyst_notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
-            note TEXT NOT NULL, created_at TEXT NOT NULL,
-            FOREIGN KEY(event_id) REFERENCES security_events(id) ON DELETE CASCADE)""")
-        db.execute("CREATE INDEX IF NOT EXISTS idx_notes_event_id ON analyst_notes(event_id, id)")
+        db.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)""")
+        applied = {
+            row["version"] for row in db.execute("SELECT version FROM schema_migrations")
+        }
+
+        if 1 not in applied:
+            db.execute("""CREATE TABLE IF NOT EXISTS security_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL, event_type TEXT NOT NULL, title TEXT NOT NULL,
+                description TEXT NOT NULL, source_ip TEXT, severity TEXT NOT NULL,
+                metadata_json TEXT NOT NULL, created_at TEXT NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL,
+                event_id INTEGER, created_at TEXT NOT NULL,
+                FOREIGN KEY(event_id) REFERENCES security_events(id))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS analyst_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER NOT NULL,
+                note TEXT NOT NULL, created_at TEXT NOT NULL,
+                FOREIGN KEY(event_id) REFERENCES security_events(id) ON DELETE CASCADE)""")
+            db.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (1, utc_now()),
+            )
+
+        applied = {
+            row["version"] for row in db.execute("SELECT version FROM schema_migrations")
+        }
+        if 2 not in applied:
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(security_events)")}
+            if "triage_status" not in columns:
+                db.execute("ALTER TABLE security_events ADD COLUMN triage_status TEXT NOT NULL DEFAULT 'new'")
+            db.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (2, utc_now()),
+            )
+
+        applied = {
+            row["version"] for row in db.execute("SELECT version FROM schema_migrations")
+        }
+        if 3 not in applied:
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_log)")}
+            if "actor" not in columns:
+                db.execute("ALTER TABLE audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT 'legacy'")
+            db.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (3, utc_now()),
+            )
+
+        applied = {
+            row["version"] for row in db.execute("SELECT version FROM schema_migrations")
+        }
+        if 4 not in applied:
+            db.execute("CREATE INDEX IF NOT EXISTS idx_events_created_at ON security_events(created_at DESC)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_events_severity ON security_events(severity)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_events_status ON security_events(triage_status)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_events_event_type ON security_events(event_type)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_notes_event_id ON analyst_notes(event_id, id)")
+            db.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (4, utc_now()),
+            )
 
 
 class EventIn(BaseModel):
