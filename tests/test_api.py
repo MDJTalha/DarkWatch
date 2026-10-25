@@ -258,3 +258,42 @@ def test_old_database_schema_is_migrated(tmp_path, monkeypatch):
     with main.db_session() as db:
         columns = {row["name"] for row in db.execute("PRAGMA table_info(security_events)")}
     assert "triage_status" in columns
+
+
+def test_search_finds_matching_event_beyond_first_200_records(client):
+    with main.db_session() as db:
+        db.execute(
+            """INSERT INTO security_events
+            (source, event_type, title, description, source_ip, severity,
+             metadata_json, created_at, triage_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("legacy-agent", "other", "Needle in older record", "older matching record",
+             None, "informational", "{}", "2026-01-01T00:00:00+00:00", "new"),
+        )
+        db.executemany(
+            """INSERT INTO security_events
+            (source, event_type, title, description, source_ip, severity,
+             metadata_json, created_at, triage_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("recent-agent", "other", f"Unrelated event {index}", "no match",
+                 None, "informational", "{}", f"2026-02-{(index % 28) + 1:02d}T00:00:00+00:00", "new")
+                for index in range(205)
+            ],
+        )
+
+    response = client.get("/api/v1/events?q=Needle&limit=50", headers=auth())
+
+    assert response.status_code == 200
+    assert [event["title"] for event in response.json()] == ["Needle in older record"]
+
+
+def test_search_treats_sql_like_payload_as_plain_text(client):
+    create_event(client, title="Normal event")
+    create_event(client, title="Event with ' OR 1=1 -- text")
+
+    response = client.get("/api/v1/events?q=%27%20OR%201%3D1%20--", headers=auth())
+
+    assert response.status_code == 200
+    assert [event["title"] for event in response.json()] == ["Event with ' OR 1=1 -- text"]
+
