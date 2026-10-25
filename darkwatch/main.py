@@ -312,6 +312,7 @@ class RequestBodyLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
+        too_large_body = (f'{{"detail":"Request body exceeds {self.max_body_bytes}-byte limit."}}').encode("ascii")
         content_length = next(
             (value for key, value in scope.get("headers", []) if key.lower() == b"content-length"),
             None,
@@ -319,7 +320,7 @@ class RequestBodyLimitMiddleware:
         if content_length is not None:
             try:
                 if int(content_length) > self.max_body_bytes:
-                    body = b'{"detail":"Request body exceeds 16384-byte limit."}'
+                    body = too_large_body
                     await send({"type": "http.response.start", "status": 413,
                                 "headers": [(b"content-type", b"application/json"),
                                             (b"content-length", str(len(body)).encode("ascii"))]})
@@ -336,8 +337,6 @@ class RequestBodyLimitMiddleware:
         received = 0
         too_large = False
         response_started = False
-        too_large_body = b'{"detail":"Request body exceeds 16384-byte limit."}'
-
         async def limited_receive():
             nonlocal received, too_large
             message = await receive()
