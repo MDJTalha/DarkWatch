@@ -54,6 +54,20 @@ def test_dashboard_serves_operator_ui(client):
     assert "event_type" in response.text
 
 
+def test_security_headers_are_set_on_dashboard_and_api(client):
+    dashboard = client.get("/dashboard")
+    assert dashboard.headers["x-content-type-options"] == "nosniff"
+    assert dashboard.headers["x-frame-options"] == "DENY"
+    assert dashboard.headers["referrer-policy"] == "no-referrer"
+    assert "frame-ancestors 'none'" in dashboard.headers["content-security-policy"]
+    assert dashboard.headers["cache-control"] == "no-store"
+
+    api = client.get("/api/v1/events", headers=auth())
+    assert api.status_code == 200
+    assert api.headers["x-content-type-options"] == "nosniff"
+    assert api.headers["cache-control"] == "no-store"
+
+
 def test_ingest_requires_authentication(client):
     assert client.post("/api/v1/events", json=sample_event()).status_code == 401
 
