@@ -207,6 +207,26 @@ def test_event_pagination_rejects_negative_offset(client):
     assert response.status_code == 422
 
 
+
+def test_event_type_filter_normalizes_case_and_whitespace(client):
+    event = create_event(client, event_type="suspicious_process")
+
+    response = client.get(
+        "/api/v1/events?event_type=%20SUSPICIOUS_PROCESS%20",
+        headers=auth(),
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == [event["id"]]
+
+
+def test_event_type_filter_rejects_unsupported_values(client):
+    response = client.get("/api/v1/events?event_type=unknown_type", headers=auth())
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unsupported event_type."
+
+
 def test_old_database_schema_is_migrated(tmp_path, monkeypatch):
     import sqlite3
     db_path = tmp_path / "old.db"
