@@ -79,6 +79,14 @@ The dashboard applies these filters on the server and provides Previous/Next pag
 
 Allowed event types: failed_login, malware_detected, suspicious_process, firewall_block, configuration_change, data_exfiltration_suspected, and other. Classification is a starter rule, not proof an incident occurred.
 
+## Database backup verification
+
+Create a consistent backup to a new path in an existing directory:
+
+    python -m darkwatch.backup --source .\\data\\darkwatch.db --destination .\\data\\backups\\darkwatch-backup.db
+
+The utility refuses to overwrite an existing destination and verifies SQLite integrity, foreign-key consistency, and event/audit/note counts. The automated test uses synthetic data; perform a deployment-specific restore drill before relying on backups.
+
 ## Test
     python -m pytest -q
 
