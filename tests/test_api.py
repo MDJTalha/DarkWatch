@@ -787,3 +787,57 @@ def test_request_body_limit_accepts_body_at_exact_limit(client):
 
     assert sent[0]["type"] == "http.response.start"
     assert sent[0]["status"] == 204
+
+
+
+def test_potential_duplicates_returns_matching_candidate_without_suppressing_events(client):
+    original = create_event(client, title="  Repeated   malware signal ")
+    duplicate = create_event(client, title="repeated malware signal")
+    response = client.get(
+        f"/api/v1/events/{duplicate['id']}/duplicates",
+        headers=auth(),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event_id"] == duplicate["id"]
+    assert payload["matching_rule"] == "source + event_type + normalized title + source_ip"
+    assert [event["id"] for event in payload["candidates"]] == [original["id"]]
+    assert "not confirmed duplicates" in payload["message"]
+
+    # Detection is advisory only: both original records remain stored.
+    listed = client.get("/api/v1/events?limit=10", headers=auth())
+    assert listed.status_code == 200
+    assert {event["id"] for event in listed.json()} == {original["id"], duplicate["id"]}
+
+
+def test_potential_duplicates_excludes_different_fingerprints(client):
+    event = create_event(client, title="Malware signal")
+    create_event(client, title="Different title")
+    create_event(client, title="Malware signal", source_ip="192.0.2.99")
+    create_event(client, title="Malware signal", event_type="suspicious_process")
+    response = client.get(f"/api/v1/events/{event['id']}/duplicates", headers=auth())
+    assert response.status_code == 200
+    assert response.json()["candidates"] == []
+
+
+def test_potential_duplicates_with_missing_source_ip_returns_no_candidates(client):
+    event = create_event(client, source_ip=None)
+    create_event(client, source_ip=None)
+    response = client.get(f"/api/v1/events/{event['id']}/duplicates", headers=auth())
+    assert response.status_code == 200
+    assert response.json()["candidates"] == []
+    assert "no source_ip" in response.json()["message"]
+
+
+def test_potential_duplicates_rejects_invalid_window_and_missing_event(client):
+    assert client.get(
+        "/api/v1/events/1/duplicates?window_minutes=0",
+        headers=auth(),
+    ).status_code == 422
+    assert client.get("/api/v1/events/999/duplicates", headers=auth()).status_code == 404
+
+
+def test_potential_duplicates_requires_authentication(client):
+    event = create_event(client)
+    response = client.get(f"/api/v1/events/{event['id']}/duplicates")
+    assert response.status_code == 401
