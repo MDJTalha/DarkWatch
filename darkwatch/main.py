@@ -209,6 +209,24 @@ app = FastAPI(title="DarkWatch API", description="Defensive security event inges
               version=APP_VERSION, lifespan=lifespan)
 
 
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.path.startswith("/api/") or request.url.path == "/dashboard":
+        response.headers["Cache-Control"] = "no-store"
+    if request.url.path == "/dashboard":
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+            "connect-src 'self'; img-src 'self' data:; form-action 'self'; "
+            "base-uri 'none'; frame-ancestors 'none'"
+        )
+    return response
+
+
 def get_event(db: sqlite3.Connection, event_id: int) -> sqlite3.Row:
     row = db.execute("SELECT * FROM security_events WHERE id = ?", (event_id,)).fetchone()
     if row is None:
