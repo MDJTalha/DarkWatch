@@ -2,7 +2,7 @@
 
 Defensive security monitoring and threat-intelligence platform, built in verifiable phases.
 
-**Status:** Phase 1 foundation. This starter API is not an endpoint protection product and does not guarantee prevention of intrusions. Do not expose it directly to the public internet without deployment hardening.
+**Status:** Phase 2 analyst workflow in development. This is not an endpoint protection product and does not guarantee prevention of intrusions. Do not expose it directly to the public internet without deployment hardening.
 
 ## Phase 1 scope
 - FastAPI service with a minimal health endpoint.
@@ -52,7 +52,7 @@ Only monitor systems and logs you are authorized to monitor. This release accept
 | GET | /health | Public | Minimal liveness check |
 | POST | /api/v1/events | Bearer token | Ingest normalized event |
 | GET | /api/v1/events | Bearer token | List recent events |
-| GET | /api/v1/summary | Bearer token | Severity counts and total |
+| GET | /api/v1/summary | Bearer token | Severity and triage-status counts |\n| PATCH | /api/v1/events/{id}/status | Bearer token | Update triage status |\n| POST | /api/v1/events/{id}/notes | Bearer token | Add analyst note |\n| GET | /api/v1/events/{id}/notes | Bearer token | List analyst notes |\n| GET | /dashboard | Local operator UI | Dashboard; API calls require bearer token |
 
 Allowed event types: failed_login, malware_detected, suspicious_process, firewall_block, configuration_change, data_exfiltration_suspected, and other. Classification is a starter rule, not proof an incident occurred.
 
@@ -61,7 +61,7 @@ Allowed event types: failed_login, malware_detected, suspicious_process, firewal
 
 ## Phased roadmap
 1. **Foundation (this phase):** authenticated API, SQLite records, deterministic rules, audit trail, CI.
-2. **Analyst workflow:** dashboard, search/filtering, triage status, notes, deduplication, alert delivery.
+2. **Analyst workflow (current branch):** dashboard, search/filtering, triage status, notes. Deduplication and alert delivery remain planned.
 3. **Threat intelligence:** explicitly configured trusted feeds, provenance, timestamps, indicator expiry, confidence, evidence links.
 4. **Connectors:** opt-in ingestion adapters for authorized endpoints and security tools; retries and rate limits.
 5. **Production hardening:** identity and roles, secret management, migrations, retention, backups, observability, deployment review, security testing.
