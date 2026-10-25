@@ -785,3 +785,41 @@ def test_request_body_limit_accepts_body_at_exact_limit(client):
 
     assert sent[0]["type"] == "http.response.start"
     assert sent[0]["status"] == 204
+
+
+
+def test_request_body_limit_rejects_streamed_body_over_limit():
+    import asyncio
+    from darkwatch.main import RequestBodyLimitMiddleware
+
+    chunks = [
+        {"type": "http.request", "body": b"x" * 10, "more_body": True},
+        {"type": "http.request", "body": b"y" * 7, "more_body": False},
+    ]
+    sent = []
+    downstream_called = False
+
+    async def receive():
+        return chunks.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    async def downstream(scope, receive, send):
+        nonlocal downstream_called
+        downstream_called = True
+        await receive()
+        await receive()
+        await send({"type": "http.response.start", "status": 400, "headers": []})
+        await send({"type": "http.response.body", "body": b"downstream response"})
+
+    scope = {"type": "http", "method": "POST", "headers": []}
+    middleware = RequestBodyLimitMiddleware(downstream, max_body_bytes=16)
+    asyncio.run(middleware(scope, receive, send))
+
+    assert downstream_called is True
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 413
+    assert sent[1]["type"] == "http.response.body"
+    assert sent[1]["body"] == b'{"detail":"Request body exceeds 16-byte limit."}'
+    assert sent[1]["more_body"] is False
