@@ -1,5 +1,6 @@
 """DarkWatch Phase 2 API: defensive event intake and analyst workflow."""
 import hmac
+import ipaddress
 import json
 import os
 import sqlite3
@@ -111,6 +112,19 @@ class EventIn(BaseModel):
         if normalized not in EVENT_TYPES:
             raise ValueError("unsupported event_type")
         return normalized
+
+    @field_validator("source_ip")
+    @classmethod
+    def validate_source_ip(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("source_ip must be a valid IPv4 or IPv6 address")
+        try:
+            return str(ipaddress.ip_address(normalized))
+        except ValueError as exc:
+            raise ValueError("source_ip must be a valid IPv4 or IPv6 address") from exc
 
     @field_validator("metadata")
     @classmethod
