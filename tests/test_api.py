@@ -227,6 +227,22 @@ def test_event_type_filter_rejects_unsupported_values(client):
     assert response.json()["detail"] == "Unsupported event_type."
 
 
+
+def test_source_ip_is_validated_and_canonicalized(client):
+    event = create_event(client, source_ip="2001:0db8:0:0:0:0:0:1")
+
+    assert event["source_ip"] == "2001:db8::1"
+
+
+def test_invalid_source_ip_is_rejected(client):
+    response = client.post(
+        "/api/v1/events",
+        headers=auth(),
+        json=sample_event(source_ip="not-an-ip-address"),
+    )
+
+    assert response.status_code == 422
+
 def test_old_database_schema_is_migrated(tmp_path, monkeypatch):
     import sqlite3
     db_path = tmp_path / "old.db"
