@@ -496,6 +496,10 @@ def test_sqlite_backup_is_consistent_and_verifiable(tmp_path):
         "audit_log": 1,
         "analyst_notes": 1,
     }
+    with sqlite3.connect(destination) as restored:
+        assert restored.execute("SELECT title FROM security_events WHERE id = 1").fetchone()[0] == "synthetic test event"
+        assert restored.execute("SELECT action FROM audit_log WHERE id = 1").fetchone()[0] == "synthetic test action"
+        assert restored.execute("SELECT note FROM analyst_notes WHERE id = 1").fetchone()[0] == "synthetic test note"
     with pytest.raises(FileExistsError):
         backup_database(source, destination)
 
