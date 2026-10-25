@@ -48,7 +48,7 @@ def verify_database(path: str | Path) -> dict[str, int | str]:
     database = Path(path).expanduser().resolve()
     if not database.is_file():
         raise FileNotFoundError(f"SQLite database does not exist: {database}")
-    with sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True, timeout=10) as db:
+    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=10) as db:
         integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok":
             raise sqlite3.DatabaseError(f"SQLite integrity check failed: {integrity}")
