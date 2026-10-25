@@ -26,7 +26,7 @@ DarkWatch is a development foundation. This guide is a pre-deployment checklist,
 
 - Set `DARKWATCH_DB_PATH` to a persistent path on a private local volume with restrictive filesystem permissions.
 - Do not place the SQLite database on an untrusted or publicly served directory.
-- Back up the database using a SQLite-consistent backup method, store backups separately with access controls, and periodically test restores into a disposable location.
+- Create a consistent backup using `python -m darkwatch.backup --source .\\data\\darkwatch.db --destination .\\data\\backups\\darkwatch-backup.db`. The destination must be a new file in an existing directory; the command verifies SQLite integrity, foreign keys, and table counts. Store backups separately with access controls, and periodically test restores into a disposable location. This utility has automated tests against synthetic databases; a real deployment backup/restore drill is still required.
 - Do not run restore or migration experiments against the only copy of a real database.
 - Define retention, recovery-point, and recovery-time objectives before production use.
 
