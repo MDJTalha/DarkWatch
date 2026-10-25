@@ -275,7 +275,9 @@ def test_old_database_schema_is_migrated(tmp_path, monkeypatch):
     main.init_db()
     with main.db_session() as db:
         columns = {row["name"] for row in db.execute("PRAGMA table_info(security_events)")}
+        versions = {row["version"] for row in db.execute("SELECT version FROM schema_migrations")}
     assert "triage_status" in columns
+    assert versions == {1, 2, 3, 4}
     with main.db_session() as db:
         indexes = {item["name"] for item in db.execute("PRAGMA index_list(security_events)")}
     assert "idx_events_event_type" in indexes
@@ -377,6 +379,9 @@ def test_schema_migration_is_idempotent_and_preserves_existing_events(tmp_path, 
     assert row["title"] == "Preserve this event"
     assert row["triage_status"] == "new"
     assert "triage_status" in columns
+    with main.db_session() as db:
+        versions = {item["version"] for item in db.execute("SELECT version FROM schema_migrations")}
+    assert versions == {1, 2, 3, 4}
 
 @pytest.mark.parametrize(
     ("method", "path", "body"),
