@@ -277,7 +277,7 @@ def test_old_database_schema_is_migrated(tmp_path, monkeypatch):
         columns = {row["name"] for row in db.execute("PRAGMA table_info(security_events)")}
         versions = {row["version"] for row in db.execute("SELECT version FROM schema_migrations")}
     assert "triage_status" in columns
-    assert versions == {1, 2, 3, 4}
+    assert versions == {1, 2, 3, 4, 5}
     with main.db_session() as db:
         indexes = {item["name"] for item in db.execute("PRAGMA index_list(security_events)")}
     assert "idx_events_event_type" in indexes
@@ -541,3 +541,57 @@ def test_request_body_limit_rejects_oversized_stream_without_content_length():
     assert sent[0]["type"] == "http.response.start"
     assert sent[0]["status"] == 413
     assert b"16-byte limit" in sent[1]["body"]
+
+
+def test_audit_hash_chain_detects_tampering(client):
+    from darkwatch.main import verify_audit_chain
+
+    event = create_event(client)
+    response = client.patch(
+        f"/api/v1/events/{event['id']}/status",
+        headers=auth(),
+        json={"triage_status": "investigating"},
+    )
+    assert response.status_code == 200
+    with main.db_session() as db:
+        assert verify_audit_chain(db) == (True, None)
+        db.execute("UPDATE audit_log SET action = 'tampered.action' WHERE id = 1")
+        assert verify_audit_chain(db)[0] is False
+
+
+def test_audit_hash_chain_links_records_in_order(client):
+    from darkwatch.main import verify_audit_chain
+
+    event = create_event(client)
+    client.patch(
+        f"/api/v1/events/{event['id']}/status",
+        headers=auth(),
+        json={"triage_status": "resolved"},
+    )
+    with main.db_session() as db:
+        rows = db.execute(
+            "SELECT previous_hash, entry_hash FROM audit_log ORDER BY id ASC"
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[1]["previous_hash"] == rows[0]["entry_hash"]
+        assert verify_audit_chain(db) == (True, None)
+
+
+def test_audit_chain_migration_backfills_existing_rows(tmp_path, monkeypatch):
+    import sqlite3
+    db_path = tmp_path / "audit-backfill.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE security_events (id INTEGER PRIMARY KEY, source TEXT NOT NULL, event_type TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, source_ip TEXT, severity TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, triage_status TEXT NOT NULL DEFAULT 'new')")
+    connection.execute("CREATE TABLE audit_log (id INTEGER PRIMARY KEY, action TEXT NOT NULL, event_id INTEGER, created_at TEXT NOT NULL)")
+    connection.execute("INSERT INTO security_events VALUES (1, 'test', 'other', 'test event', '', NULL, 'informational', '{}', '2026-01-01T00:00:00+00:00', 'new')")
+    connection.execute("INSERT INTO audit_log VALUES (1, 'legacy.action', 1, '2026-01-01T00:00:01+00:00')")
+    connection.commit()
+    connection.close()
+    monkeypatch.setenv("DARKWATCH_DB_PATH", str(db_path))
+    main.init_db()
+    with main.db_session() as db:
+        row = db.execute("SELECT actor, previous_hash, entry_hash FROM audit_log WHERE id = 1").fetchone()
+        assert row["actor"] == "legacy"
+        assert row["previous_hash"] == "0" * 64
+        assert len(row["entry_hash"]) == 64
+        assert main.verify_audit_chain(db) == (True, None)
