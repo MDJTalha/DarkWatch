@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 
@@ -26,10 +27,11 @@ def backup_database(source_path: str | Path, destination_path: str | Path) -> Pa
     created_destination = False
     try:
         source_uri = source.as_uri() + "?mode=ro"
-        with sqlite3.connect(source_uri, uri=True, timeout=10) as source_db:
-            with sqlite3.connect(str(destination), timeout=10) as backup_db:
+        with closing(sqlite3.connect(source_uri, uri=True, timeout=10)) as source_db:
+            with closing(sqlite3.connect(str(destination), timeout=10)) as backup_db:
                 created_destination = True
                 source_db.backup(backup_db)
+                backup_db.commit()
                 integrity = backup_db.execute("PRAGMA integrity_check").fetchone()[0]
                 if integrity != "ok":
                     raise sqlite3.DatabaseError(f"Backup integrity check failed: {integrity}")
@@ -48,7 +50,7 @@ def verify_database(path: str | Path) -> dict[str, int | str]:
     database = Path(path).expanduser().resolve()
     if not database.is_file():
         raise FileNotFoundError(f"SQLite database does not exist: {database}")
-    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=10) as db:
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=10)) as db:
         integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok":
             raise sqlite3.DatabaseError(f"SQLite integrity check failed: {integrity}")
