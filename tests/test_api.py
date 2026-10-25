@@ -99,10 +99,9 @@ def test_ingestion_creates_audit_record(client):
     event = create_event(client)
     with main.db_session() as db:
         rows = db.execute("SELECT action, event_id, actor FROM audit_log").fetchall()
-    assert len(rows) == 1
-    assert rows[0]["action"] == "event.ingested"
-    assert rows[0]["event_id"] == event["id"]
-    assert rows[0]["actor"] == "legacy-shared-token"
+    assert [row["action"] for row in rows] == ["event.ingested", "alert.created"]
+    assert all(row["event_id"] == event["id"] for row in rows)
+    assert all(row["actor"] == "legacy-shared-token" for row in rows)
 
 
 def test_summary_counts_severity_and_triage_status(client):
@@ -282,7 +281,7 @@ def test_old_database_schema_is_migrated(tmp_path, monkeypatch):
         columns = {row["name"] for row in db.execute("PRAGMA table_info(security_events)")}
         versions = {row["version"] for row in db.execute("SELECT version FROM schema_migrations")}
     assert "triage_status" in columns
-    assert versions == {1, 2, 3, 4, 5}
+    assert versions == {1, 2, 3, 4, 5, 6}
     with main.db_session() as db:
         indexes = {item["name"] for item in db.execute("PRAGMA index_list(security_events)")}
     assert "idx_events_event_type" in indexes
@@ -386,7 +385,7 @@ def test_schema_migration_is_idempotent_and_preserves_existing_events(tmp_path, 
     assert "triage_status" in columns
     with main.db_session() as db:
         versions = {item["version"] for item in db.execute("SELECT version FROM schema_migrations")}
-    assert versions == {1, 2, 3, 4, 5}
+    assert versions == {1, 2, 3, 4, 5, 6}
 
 @pytest.mark.parametrize(
     ("method", "path", "body"),
@@ -577,7 +576,7 @@ def test_audit_hash_chain_links_records_in_order(client):
         rows = db.execute(
             "SELECT previous_hash, entry_hash FROM audit_log ORDER BY id ASC"
         ).fetchall()
-        assert len(rows) == 2
+        assert len(rows) == 3
         assert rows[1]["previous_hash"] == rows[0]["entry_hash"]
         assert verify_audit_chain(db) == (True, None)
 
@@ -609,7 +608,7 @@ def test_audit_verify_endpoint_reports_valid_chain_to_admin(client):
     payload = response.json()
     assert payload["valid"] is True
     assert payload["first_invalid_row_id"] is None
-    assert payload["entries_checked"] == 1
+    assert payload["entries_checked"] == 2
     assert payload["checked_at"]
 
 
@@ -651,7 +650,7 @@ def test_audit_chain_detects_deleted_middle_row(client):
     create_event(client)
     with main.db_session() as db:
         rows = db.execute("SELECT id FROM audit_log ORDER BY id").fetchall()
-        assert len(rows) == 2
+        assert len(rows) == 4
         db.execute("DELETE FROM audit_log WHERE id = ?", (rows[0]["id"],))
         valid, first_bad_row_id = main.verify_audit_chain(db)
     assert valid is False
@@ -882,3 +881,79 @@ def test_potential_duplicates_finds_match_beyond_many_nonmatching_rows(client):
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()["candidates"]] == [original["id"]]
+
+
+def test_high_and_critical_events_create_reviewable_alerts(client):
+    critical = create_event(client, event_type="malware_detected")
+    high = create_event(client, event_type="suspicious_process")
+    create_event(client, event_type="firewall_block")
+
+    response = client.get("/api/v1/alerts", headers=auth())
+    assert response.status_code == 200
+    alerts = response.json()
+    assert {alert["event_id"] for alert in alerts} == {critical["id"], high["id"]}
+    assert {alert["severity"] for alert in alerts} == {"critical", "high"}
+    assert all(alert["status"] == "open" for alert in alerts)
+
+
+def test_alert_acknowledgement_is_idempotent_and_audited(client):
+    event = create_event(client)
+    alert = client.get("/api/v1/alerts", headers=auth()).json()[0]
+
+    first = client.patch(
+        f"/api/v1/alerts/{alert['id']}",
+        headers=auth(),
+        json={"status": "acknowledged"},
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "acknowledged"
+    assert first.json()["acknowledged_by"] == "legacy-shared-token"
+    acknowledged_at = first.json()["acknowledged_at"]
+
+    second = client.patch(
+        f"/api/v1/alerts/{alert['id']}",
+        headers=auth(),
+        json={"status": "acknowledged"},
+    )
+    assert second.status_code == 200
+    assert second.json()["acknowledged_at"] == acknowledged_at
+    assert client.get("/api/v1/events", headers=auth()).json()[0]["triage_status"] == event["triage_status"]
+    with main.db_session() as db:
+        actions = [row["action"] for row in db.execute(
+            "SELECT action FROM audit_log ORDER BY id"
+        ).fetchall()]
+    assert actions.count("alert.acknowledged") == 1
+
+
+def test_alerts_support_filters_and_require_authentication(client):
+    create_event(client, event_type="malware_detected")
+    create_event(client, event_type="suspicious_process")
+    assert client.get("/api/v1/alerts").status_code == 401
+    response = client.get("/api/v1/alerts?severity=high&status=open", headers=auth())
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["severity"] == "high"
+
+
+def test_alert_acknowledgement_validates_role_and_payload(client, monkeypatch):
+    import json
+    create_event(client)
+    alert = client.get("/api/v1/alerts", headers=auth()).json()[0]
+    viewer_token = "viewer-alert-token-that-is-long-enough"
+    monkeypatch.setenv("DARKWATCH_API_TOKENS", json.dumps([
+        {"token": viewer_token, "username": "alert.viewer", "role": "viewer"}
+    ]))
+    headers = {"Authorization": f"Bearer {viewer_token}"}
+    assert client.patch(
+        f"/api/v1/alerts/{alert['id']}", headers=headers,
+        json={"status": "acknowledged"},
+    ).status_code == 403
+    monkeypatch.delenv("DARKWATCH_API_TOKENS")
+    assert client.patch(
+        f"/api/v1/alerts/{alert['id']}", headers=auth(),
+        json={"status": "closed"},
+    ).status_code == 422
+    assert client.patch(
+        "/api/v1/alerts/999", headers=auth(),
+        json={"status": "acknowledged"},
+    ).status_code == 404
