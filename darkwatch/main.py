@@ -1,4 +1,5 @@
 """DarkWatch Phase 2 API: defensive event intake and analyst workflow."""
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -62,6 +63,49 @@ def db_session() -> Iterator[sqlite3.Connection]:
         raise
     finally:
         connection.close()
+
+
+
+def audit_entry_hash(action: str, event_id: int | None, created_at: str, actor: str, previous_hash: str) -> str:
+    """Hash a canonical audit record and its predecessor to form an ordered chain."""
+    payload = json.dumps(
+        {"action": action, "event_id": event_id, "created_at": created_at,
+         "actor": actor, "previous_hash": previous_hash},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def append_audit(db: sqlite3.Connection, action: str, event_id: int | None,
+                 created_at: str, actor: str) -> None:
+    """Append one actor-attributed audit record to the local hash chain."""
+    previous = db.execute(
+        "SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    previous_hash = previous["entry_hash"] if previous and previous["entry_hash"] else "0" * 64
+    entry_hash = audit_entry_hash(action, event_id, created_at, actor, previous_hash)
+    db.execute(
+        "INSERT INTO audit_log(action,event_id,created_at,actor,previous_hash,entry_hash) VALUES (?,?,?,?,?,?)",
+        (action, event_id, created_at, actor, previous_hash, entry_hash),
+    )
+
+
+def verify_audit_chain(db: sqlite3.Connection) -> tuple[bool, int | None]:
+    """Verify all audit rows in id order; return (valid, first_bad_row_id)."""
+    previous_hash = "0" * 64
+    rows = db.execute(
+        "SELECT id, action, event_id, created_at, actor, previous_hash, entry_hash "
+        "FROM audit_log ORDER BY id ASC"
+    ).fetchall()
+    for row in rows:
+        expected = audit_entry_hash(
+            row["action"], row["event_id"], row["created_at"],
+            row["actor"] or "legacy", previous_hash,
+        )
+        if row["previous_hash"] != previous_hash or row["entry_hash"] != expected:
+            return False, row["id"]
+        previous_hash = row["entry_hash"]
+    return True, None
 
 
 def init_db() -> None:
@@ -128,6 +172,34 @@ def init_db() -> None:
             db.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (4, utc_now()),
+            )
+
+        applied = {
+            row["version"] for row in db.execute("SELECT version FROM schema_migrations")
+        }
+        if 5 not in applied:
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_log)")}
+            if "previous_hash" not in columns:
+                db.execute("ALTER TABLE audit_log ADD COLUMN previous_hash TEXT")
+            if "entry_hash" not in columns:
+                db.execute("ALTER TABLE audit_log ADD COLUMN entry_hash TEXT")
+            previous_hash = "0" * 64
+            rows = db.execute(
+                "SELECT id, action, event_id, created_at, actor FROM audit_log ORDER BY id ASC"
+            ).fetchall()
+            for row in rows:
+                entry_hash = audit_entry_hash(
+                    row["action"], row["event_id"], row["created_at"],
+                    row["actor"] or "legacy", previous_hash,
+                )
+                db.execute(
+                    "UPDATE audit_log SET actor = ?, previous_hash = ?, entry_hash = ? WHERE id = ?",
+                    (row["actor"] or "legacy", previous_hash, entry_hash, row["id"]),
+                )
+                previous_hash = entry_hash
+            db.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (5, utc_now()),
             )
 
 
@@ -439,7 +511,7 @@ def ingest_event(payload: EventIn, identity: dict[str, str] = Depends(require_ro
             (payload.source,payload.event_type,payload.title,payload.description,payload.source_ip,
              severity,json.dumps(payload.metadata,ensure_ascii=True,separators=(",",":")),created_at))
         event_id = int(cursor.lastrowid)
-        db.execute("INSERT INTO audit_log(action,event_id,created_at,actor) VALUES (?,?,?,?)",("event.ingested",event_id,created_at,identity["username"]))
+        append_audit(db, "event.ingested", event_id, created_at, identity["username"])
         return row_to_event(get_event(db,event_id))
 
 
@@ -478,7 +550,7 @@ def update_status(event_id: int, payload: StatusUpdate, identity: dict[str, str]
     with db_session() as db:
         get_event(db,event_id)
         db.execute("UPDATE security_events SET triage_status = ? WHERE id = ?",(payload.triage_status,event_id))
-        db.execute("INSERT INTO audit_log(action,event_id,created_at,actor) VALUES (?,?,?,?)",(f"event.status.{payload.triage_status}",event_id,now,identity["username"]))
+        append_audit(db, f"event.status.{payload.triage_status}", event_id, now, identity["username"])
         return row_to_event(get_event(db,event_id))
 
 
@@ -489,7 +561,7 @@ def add_note(event_id: int, payload: NoteIn, identity: dict[str, str] = Depends(
         get_event(db,event_id)
         cursor = db.execute("INSERT INTO analyst_notes(event_id,note,created_at) VALUES (?,?,?)",(event_id,payload.note,now))
         note_id = int(cursor.lastrowid)
-        db.execute("INSERT INTO audit_log(action,event_id,created_at,actor) VALUES (?,?,?,?)",("event.note.added",event_id,now,identity["username"]))
+        append_audit(db, "event.note.added", event_id, now, identity["username"])
         row = db.execute("SELECT * FROM analyst_notes WHERE id = ?",(note_id,)).fetchone()
         return dict(row)
 
