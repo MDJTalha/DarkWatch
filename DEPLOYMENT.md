@@ -14,11 +14,13 @@ DarkWatch is a development foundation. This guide is a pre-deployment checklist,
 
 ## Authentication secret
 
-- Set `DARKWATCH_API_TOKEN` through the runtime's secret-injection mechanism; do not commit it to source control or place it in logs.
+- Preferred: set `DARKWATCH_API_TOKENS` to a secret-injected JSON array of named identities, each with a unique `token` (at least 24 characters), `username`, and `role` (`admin`, `analyst`, `ingestor`, or `viewer`). Example shape: `[{"token":"<random-secret>","username":"analyst.alice","role":"analyst"}]`. Do not commit real tokens or place them in logs.
+- When `DARKWATCH_API_TOKENS` is configured, it takes precedence and the legacy shared token is disabled.
+- `DARKWATCH_API_TOKEN` remains as a temporary compatibility mode when the named-token variable is absent; it grants the legacy shared identity administrator access and should be retired after named tokens are configured.
 - Use a cryptographically random value substantially longer than the application's 24-character minimum.
 - Restrict access to the secret to the service operator and the process that needs it.
 - To rotate the shared token, coordinate the new value with all authorized integrations, update the runtime secret, and restart/redeploy the service. The current shared-token design does not support per-user tokens or overlapping rotation windows.
-- A shared token is not a substitute for named analyst accounts, roles, or actor-attributed audit records.
+- Named-token roles are enforced for event ingestion (`admin`, `analyst`, `ingestor`) and triage mutations (`admin`, `analyst`); all authenticated roles may read data. `viewer` is read-only. Store the JSON configuration in a protected secret manager and rotate credentials if exposed.
 
 ## Database and backups
 
@@ -37,8 +39,8 @@ DarkWatch is a development foundation. This guide is a pre-deployment checklist,
 
 ## Before any external deployment
 
-- Implement named identities and role-based authorization.
-- Add authenticated actor attribution and integrity/retention controls for audit records.
+- Replace legacy shared-token mode with named identities and role-based authorization.
+- Add tamper-evidence, retention, and independent protection for actor-attributed audit records; actor attribution alone does not make the audit log tamper-proof.
 - Add request-body limits, abuse controls, and deployment-specific security tests.
 - Use explicit versioned database migrations and validate upgrades on disposable copies.
 - Complete backup/restore drills, threat modeling, and an independent security review.
