@@ -260,6 +260,9 @@ def test_old_database_schema_is_migrated(tmp_path, monkeypatch):
     with main.db_session() as db:
         columns = {row["name"] for row in db.execute("PRAGMA table_info(security_events)")}
     assert "triage_status" in columns
+    with main.db_session() as db:
+        indexes = {item["name"] for item in db.execute("PRAGMA index_list(security_events)")}
+    assert "idx_events_event_type" in indexes
 
 
 def test_search_finds_matching_event_beyond_first_200_records(client):
