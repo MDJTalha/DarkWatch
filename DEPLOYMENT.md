@@ -41,7 +41,7 @@ DarkWatch is a development foundation. This guide is a pre-deployment checklist,
 
 - Replace legacy shared-token mode with named identities and role-based authorization.
 - Add tamper-evidence, retention, and independent protection for actor-attributed audit records; actor attribution alone does not make the audit log tamper-proof.
-- Add request-body limits, abuse controls, and deployment-specific security tests.
+- The application now rejects request bodies larger than 16 KiB, including streamed bodies; also enforce limits and rate controls at the reverse proxy and network edge.
 - Use explicit versioned database migrations and validate upgrades on disposable copies.
 - Complete backup/restore drills, threat modeling, and an independent security review.
 - Confirm the CI dependency audit and full test suite pass for the exact release commit.
