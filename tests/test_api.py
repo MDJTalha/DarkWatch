@@ -639,3 +639,15 @@ def test_database_rejects_unknown_future_schema_version(tmp_path, monkeypatch):
     monkeypatch.setenv("DARKWATCH_DB_PATH", str(db_path))
     with pytest.raises(RuntimeError, match="newer than this application supports"):
         main.init_db()
+
+
+def test_audit_chain_detects_deleted_middle_row(client):
+    create_event(client)
+    create_event(client)
+    with main.db_session() as db:
+        rows = db.execute("SELECT id FROM audit_log ORDER BY id").fetchall()
+        assert len(rows) == 2
+        db.execute("DELETE FROM audit_log WHERE id = ?", (rows[0]["id"],))
+        valid, first_bad_row_id = main.verify_audit_chain(db)
+    assert valid is False
+    assert first_bad_row_id == rows[1]["id"]
