@@ -50,6 +50,8 @@ def test_dashboard_serves_operator_ui(client):
     assert response.status_code == 200
     assert "DarkWatch Analyst Dashboard" in response.text
     assert "/api/v1/events" in response.text
+    assert 'id="eventType"' in response.text
+    assert "event_type" in response.text
 
 
 def test_ingest_requires_authentication(client):
