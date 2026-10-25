@@ -471,3 +471,39 @@ def test_named_token_config_rejects_invalid_role_type(client, monkeypatch):
     ]))
     response = client.get("/api/v1/events", headers=auth())
     assert response.status_code == 503
+
+
+def test_sqlite_backup_is_consistent_and_verifiable(tmp_path):
+    import sqlite3
+    from darkwatch.backup import backup_database, verify_database
+
+    source = tmp_path / "source.db"
+    destination = tmp_path / "backups" / "backup.db"
+    destination.parent.mkdir()
+    with sqlite3.connect(source) as db:
+        db.execute("CREATE TABLE security_events (id INTEGER PRIMARY KEY, title TEXT NOT NULL)")
+        db.execute("CREATE TABLE audit_log (id INTEGER PRIMARY KEY, action TEXT NOT NULL)")
+        db.execute("CREATE TABLE analyst_notes (id INTEGER PRIMARY KEY, note TEXT NOT NULL)")
+        db.execute("INSERT INTO security_events VALUES (1, 'synthetic test event')")
+        db.execute("INSERT INTO audit_log VALUES (1, 'synthetic test action')")
+        db.execute("INSERT INTO analyst_notes VALUES (1, 'synthetic test note')")
+
+    result = backup_database(source, destination)
+    assert result == destination.resolve()
+    assert verify_database(destination) == {
+        "integrity": "ok",
+        "security_events": 1,
+        "audit_log": 1,
+        "analyst_notes": 1,
+    }
+    with pytest.raises(FileExistsError):
+        backup_database(source, destination)
+
+
+def test_sqlite_backup_refuses_same_source_and_destination(tmp_path):
+    from darkwatch.backup import backup_database
+
+    source = tmp_path / "same.db"
+    source.touch()
+    with pytest.raises(ValueError):
+        backup_database(source, source)
