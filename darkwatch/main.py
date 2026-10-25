@@ -40,6 +40,11 @@ def connect_db() -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(str(path), timeout=10)
     connection.row_factory = sqlite3.Row
+    connection.create_function(
+        "unicode_casefold", 1,
+        lambda value: str(value).casefold() if value is not None else "",
+        deterministic=True,
+    )
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA busy_timeout = 10000")
     return connection
@@ -217,21 +222,20 @@ small{color:#b9c8ce}.error{color:#ff9b9b}form{margin:12px 0}.wrap{overflow:auto}
 <div class="cards" id="summary"></div><form id="filters"><input id="q" placeholder="Search title, source, description">
 <select id="severity"><option value="">All severities</option><option>informational</option><option>low</option><option>medium</option><option>high</option><option>critical</option></select>
 <select id="state"><option value="">All statuses</option><option>new</option><option>investigating</option><option>resolved</option></select><button>Apply filters</button></form>
+<div><button id="previous" type="button" disabled>Previous</button> <span id="pageInfo" aria-live="polite">Page 1</span> <button id="next" type="button" disabled>Next</button></div>
 <div class="wrap"><table><thead><tr><th>ID / Time</th><th>Event</th><th>Severity</th><th>Triage</th><th>Actions</th></tr></thead><tbody id="events"></tbody></table></div>
 <script>
-let token=''; const el=id=>document.getElementById(id);
+let token='', offset=0, pageSize=50; const el=id=>document.getElementById(id);
 async function api(path,options={}){const r=await fetch(path,{...options,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',...(options.headers||{})}});if(!r.ok)throw new Error((await r.text()).slice(0,300));return r.json()}
 function message(s,bad=false){el('message').textContent=s;el('message').className=bad?'error':''}
-async function load(){try{const [summary,events]=await Promise.all([api('/api/v1/summary'),api('/api/v1/events?limit=200')]);
+async function load(){try{const q=el('q').value.trim(),sev=el('severity').value,state=el('state').value;const params=new URLSearchParams({limit:String(pageSize),offset:String(offset)});if(q)params.set('q',q);if(sev)params.set('severity',sev);if(state)params.set('triage_status',state);const [summary,events]=await Promise.all([api('/api/v1/summary'),api('/api/v1/events?'+params.toString())]);
 el('summary').replaceChildren();[['Events',summary.total_events],...Object.entries(summary.by_severity),...Object.entries(summary.by_status)].forEach(([k,v])=>{const d=document.createElement('div');d.className='card';const b=document.createElement('strong');b.textContent=v;const p=document.createElement('div');p.textContent=k.replaceAll('_',' ');d.append(b,p);el('summary').append(d)});
-const q=el('q').value.toLowerCase(),sev=el('severity').value,state=el('state').value;
-const filtered=events.filter(e=>(!q||(e.title+' '+e.source+' '+e.description).toLowerCase().includes(q))&&(!sev||e.severity===sev)&&(!state||e.triage_status===state));
-el('events').replaceChildren();filtered.forEach(e=>{const tr=document.createElement('tr');const values=[e.id+' · '+e.created_at,e.title+'\n'+e.source,e.severity,e.triage_status];values.forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.append(td)});
+el('events').replaceChildren();events.forEach(e=>{const tr=document.createElement('tr');const values=[e.id+' · '+e.created_at,e.title+'\n'+e.source,e.severity,e.triage_status];values.forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.append(td)});
 const td=document.createElement('td');const sel=document.createElement('select');['new','investigating','resolved'].forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;o.selected=e.triage_status===s;sel.append(o)});
 sel.addEventListener('change',async()=>{try{await api('/api/v1/events/'+e.id+'/status',{method:'PATCH',body:JSON.stringify({triage_status:sel.value})});message('Event '+e.id+' status updated.');await load()}catch(err){message(err.message,true)}});
 const note=document.createElement('button');note.textContent='Add note';note.addEventListener('click',async()=>{const n=prompt('Investigation note (do not include credentials or unnecessary personal data):');if(n===null)return;try{await api('/api/v1/events/'+e.id+'/notes',{method:'POST',body:JSON.stringify({note:n})});message('Note saved for event '+e.id)}catch(err){message(err.message,true)}});td.append(sel,note);tr.append(td);el('events').append(tr)});
-message('Connected. Showing '+filtered.length+' of '+events.length+' stored events.')}catch(err){message('Unable to load dashboard: '+err.message,true)}}
-el('auth').addEventListener('submit',async e=>{e.preventDefault();token=el('token').value;await load()});el('filters').addEventListener('submit',e=>{e.preventDefault();load()});
+el('previous').disabled=offset===0;el('next').disabled=events.length<pageSize;el('pageInfo').textContent='Showing '+events.length+' events · offset '+offset;message('Connected. Showing this page of matching events.')}catch(err){message('Unable to load dashboard: '+err.message,true)}}
+el('auth').addEventListener('submit',async e=>{e.preventDefault();token=el('token').value;offset=0;await load()});el('filters').addEventListener('submit',e=>{e.preventDefault();offset=0;load()});el('previous').addEventListener('click',()=>{offset=Math.max(0,offset-pageSize);load()});el('next').addEventListener('click',()=>{offset+=pageSize;load()});
 </script></main></body></html>"""
 
 
@@ -253,6 +257,7 @@ def ingest_event(payload: EventIn) -> dict[str, Any]:
 @app.get("/api/v1/events", response_model=list[EventOut], tags=["events"], dependencies=[Depends(require_api_token)])
 def list_events(
     limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0, le=10000000),
     severity: Severity | None = None,
     triage_status: TriageStatus | None = None,
     event_type: str | None = Query(default=None, max_length=60),
@@ -269,9 +274,9 @@ def list_events(
     if event_type:
         sql += " AND event_type = ?"; params.append(event_type)
     if q:
-        sql += " AND (instr(lower(title), lower(?)) > 0 OR instr(lower(source), lower(?)) > 0 OR instr(lower(description), lower(?)) > 0)"
+        sql += " AND (instr(unicode_casefold(title), unicode_casefold(?)) > 0 OR instr(unicode_casefold(source), unicode_casefold(?)) > 0 OR instr(unicode_casefold(description), unicode_casefold(?)) > 0)"
         params.extend([q] * 3)
-    sql += " ORDER BY id DESC LIMIT ?"; params.append(limit)
+    sql += " ORDER BY id DESC LIMIT ? OFFSET ?"; params.extend([limit, offset])
     with db_session() as db:
         return [row_to_event(r) for r in db.execute(sql,params).fetchall()]
 
