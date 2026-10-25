@@ -651,3 +651,59 @@ def test_audit_chain_detects_deleted_middle_row(client):
         valid, first_bad_row_id = main.verify_audit_chain(db)
     assert valid is False
     assert first_bad_row_id == rows[1]["id"]
+
+
+
+@pytest.mark.parametrize(
+    ("role", "method", "path", "body", "expected_status"),
+    [
+        ("ingestor", "patch", "/api/v1/events/1/status", {"triage_status": "resolved"}, 403),
+        ("viewer", "post", "/api/v1/events", sample_event(), 403),
+        ("analyst", "get", "/api/v1/audit/verify", None, 403),
+        ("viewer", "get", "/api/v1/events", None, 200),
+        ("ingestor", "post", "/api/v1/events", sample_event(), 201),
+    ],
+)
+def test_named_role_permissions_are_enforced(
+    client, monkeypatch, role, method, path, body, expected_status
+):
+    import json
+
+    event = create_event(client)
+    if path == "/api/v1/events/1/status":
+        path = f"/api/v1/events/{event['id']}/status"
+    named_token = f"role-matrix-token-for-{role}-with-sufficient-length"
+    monkeypatch.setenv(
+        "DARKWATCH_API_TOKENS",
+        json.dumps([{"token": named_token, "username": f"test.{role}", "role": role}]),
+    )
+
+    kwargs = {"headers": {"Authorization": f"Bearer {named_token}"}}
+    if body is not None:
+        kwargs["json"] = body
+    response = getattr(client, method)(path, **kwargs)
+
+    assert response.status_code == expected_status
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [
+            {"token": "duplicate-user-token-value-long-enough", "username": "same.user", "role": "viewer"},
+            {"token": "different-token-value-long-enough", "username": "same.user", "role": "analyst"},
+        ],
+        [
+            {"token": "duplicate-token-value-long-enough", "username": "user.one", "role": "viewer"},
+            {"token": "duplicate-token-value-long-enough", "username": "user.two", "role": "analyst"},
+        ],
+        [],
+        {"token": "not-an-array", "username": "user", "role": "viewer"},
+    ],
+)
+def test_invalid_named_identity_configuration_fails_closed(client, monkeypatch, entries):
+    import json
+
+    monkeypatch.setenv("DARKWATCH_API_TOKENS", json.dumps(entries))
+    response = client.get("/api/v1/events", headers=auth())
+    assert response.status_code == 503
