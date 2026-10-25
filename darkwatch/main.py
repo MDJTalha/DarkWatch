@@ -691,11 +691,16 @@ def acknowledge_alert(
         if alert is None:
             raise HTTPException(status_code=404, detail="Alert not found.")
         if alert["status"] == "open":
-            db.execute(
-                "UPDATE alerts SET status = 'acknowledged', acknowledged_at = ?, acknowledged_by = ? WHERE id = ?",
+            # Claim the state transition atomically so concurrent acknowledgements
+            # cannot overwrite attribution or append duplicate audit entries.
+            cursor = db.execute(
+                """UPDATE alerts
+                   SET status = 'acknowledged', acknowledged_at = ?, acknowledged_by = ?
+                   WHERE id = ? AND status = 'open'""",
                 (now, identity["username"], alert_id),
             )
-            append_audit(db, "alert.acknowledged", alert["event_id"], now, identity["username"])
+            if cursor.rowcount == 1:
+                append_audit(db, "alert.acknowledged", alert["event_id"], now, identity["username"])
         updated = db.execute(
             """SELECT a.id, a.event_id, a.severity, a.status, a.created_at,
                       a.acknowledged_at, a.acknowledged_by,
