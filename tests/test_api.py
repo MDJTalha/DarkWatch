@@ -511,3 +511,33 @@ def test_sqlite_backup_refuses_same_source_and_destination(tmp_path):
     source.touch()
     with pytest.raises(ValueError):
         backup_database(source, source)
+
+
+def test_request_body_limit_rejects_oversized_stream_without_content_length():
+    import asyncio
+    from darkwatch.main import RequestBodyLimitMiddleware
+
+    async def downstream(scope, receive, send):
+        await receive()
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"accepted"})
+
+    messages = [
+        {"type": "http.request", "body": b"a" * 10, "more_body": True},
+        {"type": "http.request", "body": b"b" * 10, "more_body": False},
+    ]
+    sent = []
+
+    async def receive():
+        return messages.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "headers": []}
+    middleware = RequestBodyLimitMiddleware(downstream, max_body_bytes=16)
+    asyncio.run(middleware(scope, receive, send))
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 413
+    assert b"16384-byte limit" in sent[1]["body"]
