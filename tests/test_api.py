@@ -297,3 +297,54 @@ def test_search_treats_sql_like_payload_as_plain_text(client):
     assert response.status_code == 200
     assert [event["title"] for event in response.json()] == ["Event with ' OR 1=1 -- text"]
 
+def test_database_transaction_rolls_back_related_writes_on_failure(client):
+    import sqlite3
+
+    create_event(client)
+    with main.db_session() as db:
+        before = db.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+
+    with pytest.raises(sqlite3.IntegrityError):
+        with main.db_session() as db:
+            db.execute(
+                "INSERT INTO audit_log(action, event_id, created_at) VALUES (?, ?, ?)",
+                ("test.invalid-reference", 999999, "2026-01-01T00:00:00+00:00"),
+            )
+
+    with main.db_session() as db:
+        after = db.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    assert after == before
+
+
+def test_schema_migration_is_idempotent_and_preserves_existing_events(tmp_path, monkeypatch):
+    import sqlite3
+
+    db_path = tmp_path / "legacy-idempotent.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("""CREATE TABLE security_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, event_type TEXT NOT NULL,
+        title TEXT NOT NULL, description TEXT NOT NULL, source_ip TEXT, severity TEXT NOT NULL,
+        metadata_json TEXT NOT NULL, created_at TEXT NOT NULL)""")
+    connection.execute(
+        """INSERT INTO security_events
+        (source, event_type, title, description, source_ip, severity, metadata_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("legacy-agent", "other", "Preserve this event", "legacy row", None,
+         "informational", "{}", "2026-01-01T00:00:00+00:00"),
+    )
+    connection.commit()
+    connection.close()
+    monkeypatch.setenv("DARKWATCH_DB_PATH", str(db_path))
+
+    main.init_db()
+    main.init_db()
+
+    with main.db_session() as db:
+        row = db.execute(
+            "SELECT title, triage_status FROM security_events WHERE id = 1"
+        ).fetchone()
+        columns = {item["name"] for item in db.execute("PRAGMA table_info(security_events)")}
+    assert row["title"] == "Preserve this event"
+    assert row["triage_status"] == "new"
+    assert "triage_status" in columns
+
