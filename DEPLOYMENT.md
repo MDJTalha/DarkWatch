@@ -46,7 +46,7 @@ Review [THREAT_MODEL.md](THREAT_MODEL.md) as an initial repository-based review.
 - Replace legacy shared-token mode with named identities and role-based authorization.
 - Add tamper-evidence, retention, and independent protection for actor-attributed audit records; actor attribution alone does not make the audit log tamper-proof.
 - The application now rejects request bodies larger than 16 KiB, including streamed bodies; also enforce limits and rate controls at the reverse proxy and network edge.
-- Versioned SQLite migrations are implemented and legacy schema upgrades are covered by automated tests; run a deployment-specific upgrade rehearsal and backup/restore drill on a disposable database copy before rollout.
+- Versioned SQLite migrations (versions 1–5) are implemented and legacy schema upgrades are covered by automated tests; run a deployment-specific upgrade rehearsal and backup/restore drill on a disposable database copy before rollout.
 - Complete backup/restore drills, threat modeling, and an independent security review.
 - Confirm the CI dependency audit and full test suite pass for the exact release commit.
 - Record the approved configuration and rollback plan.
