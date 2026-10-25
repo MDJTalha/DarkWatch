@@ -628,3 +628,14 @@ def test_audit_verify_endpoint_detects_tampered_row(client):
     assert response.status_code == 200
     assert response.json()["valid"] is False
     assert response.json()["first_invalid_row_id"] == 1
+
+
+def test_database_rejects_unknown_future_schema_version(tmp_path, monkeypatch):
+    import sqlite3
+    db_path = tmp_path / "future-schema.db"
+    with sqlite3.connect(db_path) as db:
+        db.execute("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+        db.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (999, 'synthetic')")
+    monkeypatch.setenv("DARKWATCH_DB_PATH", str(db_path))
+    with pytest.raises(RuntimeError, match="newer than this application supports"):
+        main.init_db()
