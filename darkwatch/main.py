@@ -228,13 +228,13 @@ small{color:#b9c8ce}.error{color:#ff9b9b}form{margin:12px 0}.wrap{overflow:auto}
 let token='', offset=0, pageSize=50; const el=id=>document.getElementById(id);
 async function api(path,options={}){const r=await fetch(path,{...options,headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',...(options.headers||{})}});if(!r.ok)throw new Error((await r.text()).slice(0,300));return r.json()}
 function message(s,bad=false){el('message').textContent=s;el('message').className=bad?'error':''}
-async function load(){try{const q=el('q').value.trim(),sev=el('severity').value,state=el('state').value;const params=new URLSearchParams({limit:String(pageSize),offset:String(offset)});if(q)params.set('q',q);if(sev)params.set('severity',sev);if(state)params.set('triage_status',state);const [summary,events]=await Promise.all([api('/api/v1/summary'),api('/api/v1/events?'+params.toString())]);
+async function load(){try{const q=el('q').value.trim(),sev=el('severity').value,state=el('state').value;const params=new URLSearchParams({limit:String(pageSize+1),offset:String(offset)});if(q)params.set('q',q);if(sev)params.set('severity',sev);if(state)params.set('triage_status',state);const [summary,events]=await Promise.all([api('/api/v1/summary'),api('/api/v1/events?'+params.toString())]);
 el('summary').replaceChildren();[['Events',summary.total_events],...Object.entries(summary.by_severity),...Object.entries(summary.by_status)].forEach(([k,v])=>{const d=document.createElement('div');d.className='card';const b=document.createElement('strong');b.textContent=v;const p=document.createElement('div');p.textContent=k.replaceAll('_',' ');d.append(b,p);el('summary').append(d)});
-el('events').replaceChildren();events.forEach(e=>{const tr=document.createElement('tr');const values=[e.id+' · '+e.created_at,e.title+'\n'+e.source,e.severity,e.triage_status];values.forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.append(td)});
+const pageEvents=events.slice(0,pageSize);el('events').replaceChildren();pageEvents.forEach(e=>{const tr=document.createElement('tr');const values=[e.id+' · '+e.created_at,e.title+'\n'+e.source,e.severity,e.triage_status];values.forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.append(td)});
 const td=document.createElement('td');const sel=document.createElement('select');['new','investigating','resolved'].forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;o.selected=e.triage_status===s;sel.append(o)});
 sel.addEventListener('change',async()=>{try{await api('/api/v1/events/'+e.id+'/status',{method:'PATCH',body:JSON.stringify({triage_status:sel.value})});message('Event '+e.id+' status updated.');await load()}catch(err){message(err.message,true)}});
 const note=document.createElement('button');note.textContent='Add note';note.addEventListener('click',async()=>{const n=prompt('Investigation note (do not include credentials or unnecessary personal data):');if(n===null)return;try{await api('/api/v1/events/'+e.id+'/notes',{method:'POST',body:JSON.stringify({note:n})});message('Note saved for event '+e.id)}catch(err){message(err.message,true)}});td.append(sel,note);tr.append(td);el('events').append(tr)});
-el('previous').disabled=offset===0;el('next').disabled=events.length<pageSize;el('pageInfo').textContent='Showing '+events.length+' events · offset '+offset;message('Connected. Showing this page of matching events.')}catch(err){message('Unable to load dashboard: '+err.message,true)}}
+el('previous').disabled=offset===0;el('next').disabled=events.length<=pageSize;el('pageInfo').textContent='Showing '+pageEvents.length+' events · offset '+offset;message('Connected. Showing this page of matching events.')}catch(err){message('Unable to load dashboard: '+err.message,true)}}
 el('auth').addEventListener('submit',async e=>{e.preventDefault();token=el('token').value;offset=0;await load()});el('filters').addEventListener('submit',e=>{e.preventDefault();offset=0;load()});el('previous').addEventListener('click',()=>{offset=Math.max(0,offset-pageSize);load()});el('next').addEventListener('click',()=>{offset+=pageSize;load()});
 </script></main></body></html>"""
 
@@ -263,8 +263,10 @@ def list_events(
     event_type: str | None = Query(default=None, max_length=60),
     q: str | None = Query(default=None, min_length=1, max_length=200),
 ) -> list[dict[str, Any]]:
-    if event_type is not None and event_type not in EVENT_TYPES:
-        raise HTTPException(status_code=422, detail="Unsupported event_type.")
+    if event_type is not None:
+        event_type = event_type.strip().lower()
+        if event_type not in EVENT_TYPES:
+            raise HTTPException(status_code=422, detail="Unsupported event_type.")
     sql = "SELECT * FROM security_events WHERE 1=1"
     params: list[Any] = []
     if severity:
