@@ -595,3 +595,36 @@ def test_audit_chain_migration_backfills_existing_rows(tmp_path, monkeypatch):
         assert row["previous_hash"] == "0" * 64
         assert len(row["entry_hash"]) == 64
         assert main.verify_audit_chain(db) == (True, None)
+
+
+def test_audit_verify_endpoint_reports_valid_chain_to_admin(client):
+    create_event(client)
+    response = client.get("/api/v1/audit/verify", headers=auth())
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["valid"] is True
+    assert payload["first_invalid_row_id"] is None
+    assert payload["entries_checked"] == 1
+    assert payload["checked_at"]
+
+
+def test_audit_verify_endpoint_denies_viewer(client, monkeypatch):
+    import json
+    monkeypatch.setenv("DARKWATCH_API_TOKENS", json.dumps([
+        {"token": "named-viewer-token-that-is-long-enough", "username": "audit.viewer", "role": "viewer"}
+    ]))
+    response = client.get(
+        "/api/v1/audit/verify",
+        headers={"Authorization": "Bearer named-viewer-token-that-is-long-enough"},
+    )
+    assert response.status_code == 403
+
+
+def test_audit_verify_endpoint_detects_tampered_row(client):
+    create_event(client)
+    with main.db_session() as db:
+        db.execute("UPDATE audit_log SET action = 'forged.action' WHERE id = 1")
+    response = client.get("/api/v1/audit/verify", headers=auth())
+    assert response.status_code == 200
+    assert response.json()["valid"] is False
+    assert response.json()["first_invalid_row_id"] == 1
