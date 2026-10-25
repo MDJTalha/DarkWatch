@@ -785,3 +785,56 @@ def test_request_body_limit_accepts_body_at_exact_limit(client):
 
     assert sent[0]["type"] == "http.response.start"
     assert sent[0]["status"] == 204
+
+
+@pytest.mark.parametrize(
+    ("role", "method", "path", "body", "expected_status"),
+    [
+        ("viewer", "post", "/api/v1/events", sample_event(), 403),
+        ("ingestor", "patch", "/api/v1/events/1/status", {"triage_status": "resolved"}, 403),
+        ("ingestor", "post", "/api/v1/events/1/notes", {"note": "not permitted"}, 403),
+        ("analyst", "get", "/api/v1/audit/verify", None, 403),
+    ],
+)
+def test_role_matrix_denies_operations_outside_role(
+    client, monkeypatch, role, method, path, body, expected_status
+):
+    import json
+
+    # Create the target event with the legacy admin fixture before switching to
+    # the named identity under test.
+    if path.startswith("/api/v1/events/1/"):
+        create_event(client)
+    named_token = f"role-matrix-{role}-token-that-is-long-enough"
+    monkeypatch.setenv(
+        "DARKWATCH_API_TOKENS",
+        json.dumps([{"token": named_token, "username": f"test.{role}", "role": role}]),
+    )
+
+    kwargs = {"headers": {"Authorization": f"Bearer {named_token}"}}
+    if body is not None:
+        kwargs["json"] = body
+    response = getattr(client, method)(path, **kwargs)
+
+    assert response.status_code == expected_status
+    if expected_status == 403:
+        assert response.json()["detail"] == "Insufficient role for this operation."
+
+
+def test_admin_can_verify_audit_chain(client, monkeypatch):
+    import json
+
+    create_event(client)
+    admin_token = "role-matrix-admin-token-that-is-long-enough"
+    monkeypatch.setenv(
+        "DARKWATCH_API_TOKENS",
+        json.dumps([{"token": admin_token, "username": "test.admin", "role": "admin"}]),
+    )
+
+    response = client.get(
+        "/api/v1/audit/verify",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is True
