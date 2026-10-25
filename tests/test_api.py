@@ -308,12 +308,21 @@ def test_database_transaction_rolls_back_related_writes_on_failure(client):
         with main.db_session() as db:
             db.execute(
                 "INSERT INTO audit_log(action, event_id, created_at) VALUES (?, ?, ?)",
+                ("test.must-rollback", 1, "2026-01-01T00:00:00+00:00"),
+            )
+            db.execute(
+                "INSERT INTO audit_log(action, event_id, created_at) VALUES (?, ?, ?)",
                 ("test.invalid-reference", 999999, "2026-01-01T00:00:00+00:00"),
             )
 
     with main.db_session() as db:
         after = db.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+        rolled_back = db.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action = ?",
+            ("test.must-rollback",),
+        ).fetchone()[0]
     assert after == before
+    assert rolled_back == 0
 
 
 def test_schema_migration_is_idempotent_and_preserves_existing_events(tmp_path, monkeypatch):
