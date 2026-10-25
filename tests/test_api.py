@@ -10,6 +10,7 @@ TOKEN = "test-token-that-is-at-least-24-chars"
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DARKWATCH_API_TOKEN", TOKEN)
+    monkeypatch.delenv("DARKWATCH_API_TOKENS", raising=False)
     monkeypatch.setenv("DARKWATCH_DB_PATH", str(tmp_path / "test.db"))
     with TestClient(main.app) as test_client:
         yield test_client
@@ -92,10 +93,11 @@ def test_ingest_and_read_event(client):
 def test_ingestion_creates_audit_record(client):
     event = create_event(client)
     with main.db_session() as db:
-        rows = db.execute("SELECT action, event_id FROM audit_log").fetchall()
+        rows = db.execute("SELECT action, event_id, actor FROM audit_log").fetchall()
     assert len(rows) == 1
     assert rows[0]["action"] == "event.ingested"
     assert rows[0]["event_id"] == event["id"]
+    assert rows[0]["actor"] == "legacy-shared-token"
 
 
 def test_summary_counts_severity_and_triage_status(client):
@@ -392,3 +394,59 @@ def test_all_data_routes_require_bearer_authentication(client, method, path, bod
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
 
+
+
+def test_named_analyst_token_records_actor_and_role(client, monkeypatch):
+    import json
+    named_token = "named-analyst-token-that-is-long-enough"
+    monkeypatch.setenv("DARKWATCH_API_TOKENS", json.dumps([
+        {"token": named_token, "username": "analyst.alice", "role": "analyst"}
+    ]))
+    response = client.post(
+        "/api/v1/events",
+        headers={"Authorization": f"Bearer {named_token}"},
+        json=sample_event(),
+    )
+    assert response.status_code == 201
+    with main.db_session() as db:
+        audit = db.execute("SELECT actor FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
+    assert audit["actor"] == "analyst.alice"
+
+
+def test_viewer_cannot_change_triage_status(client, monkeypatch):
+    import json
+    event = create_event(client)
+    viewer_token = "named-viewer-token-that-is-long-enough"
+    monkeypatch.setenv("DARKWATCH_API_TOKENS", json.dumps([
+        {"token": viewer_token, "username": "read.only", "role": "viewer"}
+    ]))
+    response = client.patch(
+        f"/api/v1/events/{event['id']}/status",
+        headers={"Authorization": f"Bearer {viewer_token}"},
+        json={"triage_status": "resolved"},
+    )
+    assert response.status_code == 403
+
+
+def test_named_token_configuration_disables_legacy_shared_token(client, monkeypatch):
+    import json
+    monkeypatch.setenv("DARKWATCH_API_TOKENS", json.dumps([
+        {"token": "another-valid-named-token-value", "username": "viewer.one", "role": "viewer"}
+    ]))
+    response = client.get("/api/v1/events", headers=auth())
+    assert response.status_code == 401
+
+
+def test_legacy_audit_schema_migrates_actor_column(tmp_path, monkeypatch):
+    import sqlite3
+    db_path = tmp_path / "legacy-audit.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE security_events (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, event_type TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, source_ip TEXT, severity TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, triage_status TEXT NOT NULL DEFAULT 'new')")
+    connection.execute("CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, event_id INTEGER, created_at TEXT NOT NULL, FOREIGN KEY(event_id) REFERENCES security_events(id))")
+    connection.commit()
+    connection.close()
+    monkeypatch.setenv("DARKWATCH_DB_PATH", str(db_path))
+    main.init_db()
+    with main.db_session() as db:
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_log)")}
+    assert "actor" in columns
