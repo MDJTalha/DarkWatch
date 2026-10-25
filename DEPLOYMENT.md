@@ -37,6 +37,10 @@ DarkWatch is a development foundation. This guide is a pre-deployment checklist,
 - Monitor service availability, repeated authentication failures, database errors, disk capacity, and backup/restore outcomes.
 - Establish an owner and response process for alerts and dependency vulnerabilities.
 
+## Threat model
+
+Review [THREAT_MODEL.md](THREAT_MODEL.md) as an initial repository-based review. Validate its assumptions against the actual deployment and arrange independent security review before external exposure.
+
 ## Before any external deployment
 
 - Replace legacy shared-token mode with named identities and role-based authorization.
