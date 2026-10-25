@@ -85,7 +85,7 @@ Allowed event types: failed_login, malware_detected, suspicious_process, firewal
 A phase is complete only when implementation, tests, and review evidence support that claim. Roadmap items are not current capabilities.
 
 ## Security reporting
-Do not include credentials, tokens, personal data, or sensitive production logs in public issues. Privately contact the repository maintainer about suspected vulnerabilities.
+Follow the private vulnerability-reporting process in [SECURITY.md](SECURITY.md). Do not include credentials, tokens, personal data, or sensitive production logs in public issues.
 
 ## License
 MIT. See LICENSE.
