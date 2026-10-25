@@ -1,0 +1,62 @@
+# Example only: adapt and validate for your deployment before enabling.
+# Assumes Nginx terminates TLS and proxies to a loopback-bound ASGI server.
+# Replace server_name, certificate paths, and upstream port for your environment.
+# Do not trust client-supplied X-Forwarded-For; Nginx overwrites it below.
+
+limit_req_zone $binary_remote_addr zone=darkwatch_api_rate:10m rate=5r/s;
+limit_conn_zone $binary_remote_addr zone=darkwatch_api_conn:10m;
+
+upstream darkwatch_asgi {
+    server 127.0.0.1:8000;
+    keepalive 16;
+}
+
+server {
+    listen 443 ssl;
+    server_name darkwatch.example.invalid;
+
+    # Configure real certificate paths from your certificate manager.
+    # ssl_certificate     /path/to/fullchain.pem;
+    # ssl_certificate_key /path/to/private-key.pem;
+
+    client_max_body_size 16k;
+    client_body_timeout 10s;
+    client_header_timeout 10s;
+    send_timeout 30s;
+    keepalive_timeout 15s;
+
+    # Never log Authorization headers or request bodies.
+    access_log /var/log/nginx/darkwatch_access.log;
+    error_log  /var/log/nginx/darkwatch_error.log warn;
+
+    location / {
+        limit_req zone=darkwatch_api_rate burst=10 nodelay;
+        limit_req_status 429;
+        limit_conn darkwatch_api_conn 10;
+
+        proxy_pass http://darkwatch_asgi;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 3s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_request_buffering on;
+        proxy_buffering on;
+    }
+}
+
+# Deployment notes:
+# - This is a starting template, not a production-ready universal configuration.
+# - Apply a separate HTTP-to-HTTPS redirect server and certificate configuration.
+# - Restrict the upstream to loopback/private networking and firewall direct access.
+# - Tune rate/connection limits for legitimate ingestion volume and trusted collectors.
+# - If behind another load balancer, configure trusted proxy ranges explicitly; do not
+#   blindly trust arbitrary forwarded headers or $remote_addr values.
+# - Validate with nginx -t, then test 413/429 responses, timeouts, and logging behavior.
+# - Nginx limits are IP-based and can affect clients sharing NAT; use additional controls
+#   at the edge if identity-based quotas are required.
