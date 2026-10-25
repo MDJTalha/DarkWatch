@@ -55,6 +55,10 @@ For named identities, set `DARKWATCH_API_TOKENS` to a protected JSON array, for 
 
 Each token must be at least 24 characters and usernames must be unique. Supported roles are `admin`, `analyst`, `ingestor`, and `viewer`. Admins and analysts can ingest and triage; ingestors can submit events; viewers can only read. All authenticated roles can read events and summaries. When `DARKWATCH_API_TOKENS` is configured, the legacy `DARKWATCH_API_TOKEN` is ignored. Without named-token configuration, the legacy shared token remains temporarily supported and has administrator-equivalent access. Use secret injection for real deployments and do not commit tokens.
 
+## Audit integrity verification
+
+Administrators can verify the local audit hash chain with `GET /api/v1/audit/verify`. The endpoint returns whether the chain is valid, the first invalid row ID if tampering or inconsistency is detected, the number of entries checked, and the check timestamp. The check scans the complete audit log, so restrict it to administrators and run it at a cadence appropriate to database size. A local hash chain detects many accidental or direct row edits, but it is not tamper-proof against an attacker able to rewrite the entire database and recompute hashes; export or anchor audit evidence to separately controlled storage for stronger assurance.
+
 ## API
 | Method | Endpoint | Access | Purpose |
 |---|---|---|---|
