@@ -96,7 +96,7 @@ def verify_audit_chain(db: sqlite3.Connection) -> tuple[bool, int | None]:
     rows = db.execute(
         "SELECT id, action, event_id, created_at, actor, previous_hash, entry_hash "
         "FROM audit_log ORDER BY id ASC"
-    ).fetchall()
+    )
     for row in rows:
         expected = audit_entry_hash(
             row["action"], row["event_id"], row["created_at"],
