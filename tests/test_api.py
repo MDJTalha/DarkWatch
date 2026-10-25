@@ -845,7 +845,6 @@ def test_potential_duplicates_requires_authentication(client):
 
 
 def test_potential_duplicates_excludes_future_dated_records(client):
-    import sqlite3
     from datetime import datetime, timedelta, timezone
 
     event = create_event(client, title="Future timestamp check")
@@ -860,7 +859,6 @@ def test_potential_duplicates_excludes_future_dated_records(client):
 
 
 def test_potential_duplicates_finds_match_beyond_many_nonmatching_rows(client):
-    import sqlite3
 
     original = create_event(client, title="Exact signal to find")
     with main.db_session() as db:
