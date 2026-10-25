@@ -882,3 +882,79 @@ def test_potential_duplicates_finds_match_beyond_many_nonmatching_rows(client):
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()["candidates"]] == [original["id"]]
+
+
+def test_high_and_critical_events_create_reviewable_alerts(client):
+    critical = create_event(client, event_type="malware_detected")
+    high = create_event(client, event_type="suspicious_process")
+    create_event(client, event_type="firewall_block")
+
+    response = client.get("/api/v1/alerts", headers=auth())
+    assert response.status_code == 200
+    alerts = response.json()
+    assert {alert["event_id"] for alert in alerts} == {critical["id"], high["id"]}
+    assert {alert["severity"] for alert in alerts} == {"critical", "high"}
+    assert all(alert["status"] == "open" for alert in alerts)
+
+
+def test_alert_acknowledgement_is_idempotent_and_audited(client):
+    event = create_event(client)
+    alert = client.get("/api/v1/alerts", headers=auth()).json()[0]
+
+    first = client.patch(
+        f"/api/v1/alerts/{alert['id']}",
+        headers=auth(),
+        json={"status": "acknowledged"},
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "acknowledged"
+    assert first.json()["acknowledged_by"] == "legacy-shared-token"
+    acknowledged_at = first.json()["acknowledged_at"]
+
+    second = client.patch(
+        f"/api/v1/alerts/{alert['id']}",
+        headers=auth(),
+        json={"status": "acknowledged"},
+    )
+    assert second.status_code == 200
+    assert second.json()["acknowledged_at"] == acknowledged_at
+    assert client.get("/api/v1/events", headers=auth()).json()[0]["triage_status"] == event["triage_status"]
+    with main.db_session() as db:
+        actions = [row["action"] for row in db.execute(
+            "SELECT action FROM audit_log ORDER BY id"
+        ).fetchall()]
+    assert actions.count("alert.acknowledged") == 1
+
+
+def test_alerts_support_filters_and_require_authentication(client):
+    create_event(client, event_type="malware_detected")
+    create_event(client, event_type="suspicious_process")
+    assert client.get("/api/v1/alerts").status_code == 401
+    response = client.get("/api/v1/alerts?severity=high&status=open", headers=auth())
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["severity"] == "high"
+
+
+def test_alert_acknowledgement_validates_role_and_payload(client, monkeypatch):
+    import json
+    create_event(client)
+    alert = client.get("/api/v1/alerts", headers=auth()).json()[0]
+    viewer_token = "viewer-alert-token-that-is-long-enough"
+    monkeypatch.setenv("DARKWATCH_API_TOKENS", json.dumps([
+        {"token": viewer_token, "username": "alert.viewer", "role": "viewer"}
+    ]))
+    headers = {"Authorization": f"Bearer {viewer_token}"}
+    assert client.patch(
+        f"/api/v1/alerts/{alert['id']}", headers=headers,
+        json={"status": "acknowledged"},
+    ).status_code == 403
+    monkeypatch.delenv("DARKWATCH_API_TOKENS")
+    assert client.patch(
+        f"/api/v1/alerts/{alert['id']}", headers=auth(),
+        json={"status": "closed"},
+    ).status_code == 422
+    assert client.patch(
+        "/api/v1/alerts/999", headers=auth(),
+        json={"status": "acknowledged"},
+    ).status_code == 404
