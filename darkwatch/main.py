@@ -269,9 +269,8 @@ def list_events(
     if event_type:
         sql += " AND event_type = ?"; params.append(event_type)
     if q:
-        sql += " AND (title LIKE ? ESCAPE '\\' OR source LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')"
-        escaped = q.replace("\\","\\\\").replace("%","\\%").replace("_","\\_")
-        params.extend([f"%{escaped}%"]*3)
+        sql += " AND (instr(lower(title), lower(?)) > 0 OR instr(lower(source), lower(?)) > 0 OR instr(lower(description), lower(?)) > 0)"
+        params.extend([q] * 3)
     sql += " ORDER BY id DESC LIMIT ?"; params.append(limit)
     with db_session() as db:
         return [row_to_event(r) for r in db.execute(sql,params).fetchall()]
