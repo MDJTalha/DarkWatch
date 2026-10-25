@@ -841,3 +841,43 @@ def test_potential_duplicates_requires_authentication(client):
     event = create_event(client)
     response = client.get(f"/api/v1/events/{event['id']}/duplicates")
     assert response.status_code == 401
+
+
+
+def test_potential_duplicates_excludes_future_dated_records(client):
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+
+    event = create_event(client, title="Future timestamp check")
+    future = create_event(client, title="Future timestamp check")
+    future_time = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    with main.db_session() as db:
+        db.execute("UPDATE security_events SET created_at = ? WHERE id = ?", (future_time, future["id"]))
+
+    response = client.get(f"/api/v1/events/{event['id']}/duplicates", headers=auth())
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["candidates"]] == []
+
+
+def test_potential_duplicates_finds_match_beyond_many_nonmatching_rows(client):
+    import sqlite3
+
+    original = create_event(client, title="Exact signal to find")
+    with main.db_session() as db:
+        db.executemany(
+            """INSERT INTO security_events
+               (source, event_type, title, description, source_ip, severity,
+                metadata_json, created_at, triage_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("unit-test-agent", "malware_detected", f"Unrelated signal {index}",
+                 "synthetic non-match", "192.0.2.15", "critical", "{}",
+                 main.utc_now(), "new")
+                for index in range(205)
+            ],
+        )
+    target = create_event(client, title=" exact   signal to find ")
+    response = client.get(f"/api/v1/events/{target['id']}/duplicates?limit=20", headers=auth())
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["candidates"]] == [original["id"]]
