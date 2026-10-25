@@ -357,3 +357,19 @@ def test_schema_migration_is_idempotent_and_preserves_existing_events(tmp_path, 
     assert row["triage_status"] == "new"
     assert "triage_status" in columns
 
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("get", "/api/v1/events", None),
+        ("get", "/api/v1/summary", None),
+        ("post", "/api/v1/events", sample_event()),
+        ("patch", "/api/v1/events/1/status", {"triage_status": "resolved"}),
+        ("post", "/api/v1/events/1/notes", {"note": "unauthorized note"}),
+        ("get", "/api/v1/events/1/notes", None),
+    ],
+)
+def test_all_data_routes_require_bearer_authentication(client, method, path, body):
+    response = getattr(client, method)(path, json=body) if body is not None else getattr(client, method)(path)
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
