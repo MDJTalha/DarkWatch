@@ -60,7 +60,7 @@ def test_dashboard_serves_operator_ui(client):
     assert 'id="alertSeverity"' in response.text
     assert "/api/v1/alerts?" in response.text
     assert "acknowledged" in response.text
-    assert "acknowledgement does not resolve the source event" in response.text
+    assert "Acknowledgement does not resolve the source event" in response.text
     assert "Potential duplicate candidates" in response.text
     assert "review only; no events were changed" in response.text
     assert "'/api/v1/events/'+e.id+'/notes'" in response.text
