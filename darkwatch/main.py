@@ -7,10 +7,10 @@ import hmac
 import json
 import os
 import sqlite3
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, AsyncIterator, Iterator, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -125,18 +125,6 @@ class SummaryOut(BaseModel):
     by_severity: dict[str, int]
 
 
-app = FastAPI(
-    title="DarkWatch API",
-    description="Defensive security event ingestion and triage foundation.",
-    version=APP_VERSION,
-)
-
-
-@app.on_event("startup")
-def startup() -> None:
-    init_db()
-
-
 def require_api_token(authorization: str | None = Header(default=None)) -> None:
     configured = os.getenv("DARKWATCH_API_TOKEN", "")
     if len(configured) < 24:
@@ -144,7 +132,9 @@ def require_api_token(authorization: str | None = Header(default=None)) -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="API authentication is not configured with a sufficiently long token.",
         )
-    if authorization is None or not hmac.compare_digest(authorization, f"Bearer {configured}"):
+    expected = f"Bearer {configured}"
+    supplied_bytes = authorization.encode("utf-8") if authorization is not None else b""
+    if not hmac.compare_digest(supplied_bytes, expected.encode("utf-8")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing bearer token.",
@@ -159,6 +149,20 @@ def row_to_event(row: sqlite3.Row) -> dict[str, Any]:
         "source_ip": row["source_ip"], "severity": row["severity"],
         "metadata": json.loads(row["metadata_json"]), "created_at": row["created_at"],
     }
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    init_db()
+    yield
+
+
+app = FastAPI(
+    title="DarkWatch API",
+    description="Defensive security event ingestion and triage foundation.",
+    version=APP_VERSION,
+    lifespan=lifespan,
+)
 
 
 @app.get("/health", tags=["system"])
