@@ -53,6 +53,8 @@ def test_dashboard_serves_operator_ui(client):
     assert "/api/v1/events" in response.text
     assert 'id="eventType"' in response.text
     assert "event_type" in response.text
+    assert "View notes" in response.text
+    assert "'/api/v1/events/'+e.id+'/notes'" in response.text
 
 
 def test_security_headers_are_set_on_dashboard_and_api(client):
