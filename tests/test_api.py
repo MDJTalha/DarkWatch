@@ -381,7 +381,7 @@ def test_schema_migration_is_idempotent_and_preserves_existing_events(tmp_path, 
     assert "triage_status" in columns
     with main.db_session() as db:
         versions = {item["version"] for item in db.execute("SELECT version FROM schema_migrations")}
-    assert versions == {1, 2, 3, 4}
+    assert versions == {1, 2, 3, 4, 5}
 
 @pytest.mark.parametrize(
     ("method", "path", "body"),
