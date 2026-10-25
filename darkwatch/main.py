@@ -78,6 +78,7 @@ def init_db() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS idx_events_created_at ON security_events(created_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_events_severity ON security_events(severity)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_events_status ON security_events(triage_status)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_events_event_type ON security_events(event_type)")
         db.execute("""CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, event_id INTEGER,
             created_at TEXT NOT NULL,
