@@ -99,10 +99,9 @@ def test_ingestion_creates_audit_record(client):
     event = create_event(client)
     with main.db_session() as db:
         rows = db.execute("SELECT action, event_id, actor FROM audit_log").fetchall()
-    assert len(rows) == 1
-    assert rows[0]["action"] == "event.ingested"
-    assert rows[0]["event_id"] == event["id"]
-    assert rows[0]["actor"] == "legacy-shared-token"
+    assert [row["action"] for row in rows] == ["event.ingested", "alert.created"]
+    assert all(row["event_id"] == event["id"] for row in rows)
+    assert all(row["actor"] == "legacy-shared-token" for row in rows)
 
 
 def test_summary_counts_severity_and_triage_status(client):
@@ -282,7 +281,7 @@ def test_old_database_schema_is_migrated(tmp_path, monkeypatch):
         columns = {row["name"] for row in db.execute("PRAGMA table_info(security_events)")}
         versions = {row["version"] for row in db.execute("SELECT version FROM schema_migrations")}
     assert "triage_status" in columns
-    assert versions == {1, 2, 3, 4, 5}
+    assert versions == {1, 2, 3, 4, 5, 6}
     with main.db_session() as db:
         indexes = {item["name"] for item in db.execute("PRAGMA index_list(security_events)")}
     assert "idx_events_event_type" in indexes
@@ -577,7 +576,7 @@ def test_audit_hash_chain_links_records_in_order(client):
         rows = db.execute(
             "SELECT previous_hash, entry_hash FROM audit_log ORDER BY id ASC"
         ).fetchall()
-        assert len(rows) == 2
+        assert len(rows) == 3
         assert rows[1]["previous_hash"] == rows[0]["entry_hash"]
         assert verify_audit_chain(db) == (True, None)
 
@@ -609,7 +608,7 @@ def test_audit_verify_endpoint_reports_valid_chain_to_admin(client):
     payload = response.json()
     assert payload["valid"] is True
     assert payload["first_invalid_row_id"] is None
-    assert payload["entries_checked"] == 1
+    assert payload["entries_checked"] == 2
     assert payload["checked_at"]
 
 
@@ -651,7 +650,7 @@ def test_audit_chain_detects_deleted_middle_row(client):
     create_event(client)
     with main.db_session() as db:
         rows = db.execute("SELECT id FROM audit_log ORDER BY id").fetchall()
-        assert len(rows) == 2
+        assert len(rows) == 4
         db.execute("DELETE FROM audit_log WHERE id = ?", (rows[0]["id"],))
         valid, first_bad_row_id = main.verify_audit_chain(db)
     assert valid is False
