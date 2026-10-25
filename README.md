@@ -87,5 +87,8 @@ A phase is complete only when implementation, tests, and review evidence support
 ## Security reporting
 Follow the private vulnerability-reporting process in [SECURITY.md](SECURITY.md). Do not include credentials, tokens, personal data, or sensitive production logs in public issues.
 
+## Deployment guidance
+Review [DEPLOYMENT.md](DEPLOYMENT.md) before any deployment. The current service remains a development foundation and must not be exposed directly to the public internet.
+
 ## License
 MIT. See LICENSE.
