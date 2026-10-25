@@ -450,3 +450,19 @@ def test_legacy_audit_schema_migrates_actor_column(tmp_path, monkeypatch):
     with main.db_session() as db:
         columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_log)")}
     assert "actor" in columns
+
+
+def test_request_body_limit_rejects_oversized_json(client):
+    oversized = sample_event(description="x" * (17 * 1024))
+    response = client.post("/api/v1/events", headers=auth(), json=oversized)
+    assert response.status_code == 413
+    assert "16384-byte limit" in response.text
+
+
+def test_named_token_config_rejects_invalid_role_type(client, monkeypatch):
+    import json
+    monkeypatch.setenv("DARKWATCH_API_TOKENS", json.dumps([
+        {"token": "another-valid-named-token-value", "username": "broken.user", "role": []}
+    ]))
+    response = client.get("/api/v1/events", headers=auth())
+    assert response.status_code == 503
