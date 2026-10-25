@@ -7,8 +7,9 @@ Defensive security monitoring and threat-intelligence platform, built in verifia
 ## Phase 1 scope
 - FastAPI service with a minimal health endpoint.
 - SQLite persistence for normalized security events and audit records.
-- Authenticated event ingestion and authenticated event/summary reads.
-- Input validation, bounded fields, parameterized SQL, and constant-time API-token comparison.
+- Authenticated event ingestion and event/summary reads; optional named tokens with roles (`admin`, `analyst`, `ingestor`, `viewer`) and actor-attributed audit rows.
+- Input validation, bounded fields, IPv4/IPv6 source-address validation and canonicalization, parameterized SQL, and constant-time API-token comparison.
+- Baseline HTTP security headers; the dashboard sets a restrictive Content Security Policy and API/dashboard responses disable caching.
 - Deterministic starter severity classification and automated API tests.
 - GitHub Actions CI.
 
@@ -22,7 +23,7 @@ Python 3.11 or newer. Windows, macOS, or Linux.
     pip install -r requirements.txt
     Copy-Item .env.example .env
 
-Set a strong local API token before starting the server:
+Set a strong local API token before starting the server (legacy compatibility mode):
 
     $env:DARKWATCH_API_TOKEN = "replace-with-a-long-random-secret"
     $env:DARKWATCH_DB_PATH = ".\data\darkwatch.db"
@@ -46,15 +47,49 @@ Open http://127.0.0.1:8000/health for liveness and http://127.0.0.1:8000/docs fo
 
 Only monitor systems and logs you are authorized to monitor. This release accepts events submitted by an operator or trusted integration; it does not autonomously scan or collect data.
 
+## Authentication and roles
+
+For named identities, set `DARKWATCH_API_TOKENS` to a protected JSON array, for example:
+
+    $env:DARKWATCH_API_TOKENS = '[{"token":"replace-with-a-random-secret-at-least-24-chars","username":"talha-admin","role":"admin"},{"token":"replace-with-another-random-secret","username":"analyst-one","role":"analyst"},{"token":"replace-with-a-third-random-secret","username":"read-only","role":"viewer"}]'
+
+Each token must be at least 24 characters and usernames must be unique. Supported roles are `admin`, `analyst`, `ingestor`, and `viewer`. Admins and analysts can ingest and triage; ingestors can submit events; viewers can only read. All authenticated roles can read events and summaries. When `DARKWATCH_API_TOKENS` is configured, the legacy `DARKWATCH_API_TOKEN` is ignored. Without named-token configuration, the legacy shared token remains temporarily supported and has administrator-equivalent access. Use secret injection for real deployments and do not commit tokens.
+
+## Audit integrity verification
+
+Administrators can verify the local audit hash chain with `GET /api/v1/audit/verify`. The endpoint returns whether the chain is valid, the first invalid row ID if tampering or inconsistency is detected, the number of entries checked, and the check timestamp. The check scans the complete audit log, so restrict it to administrators and run it at a cadence appropriate to database size. A local hash chain detects many accidental or direct row edits, but it is not tamper-proof against an attacker able to rewrite the entire database and recompute hashes; export or anchor audit evidence to separately controlled storage for stronger assurance.
+
 ## API
 | Method | Endpoint | Access | Purpose |
 |---|---|---|---|
 | GET | /health | Public | Minimal liveness check |
 | POST | /api/v1/events | Bearer token | Ingest normalized event |
-| GET | /api/v1/events | Bearer token | List recent events |
-| GET | /api/v1/summary | Bearer token | Severity and triage-status counts |\n| PATCH | /api/v1/events/{id}/status | Bearer token | Update triage status |\n| POST | /api/v1/events/{id}/notes | Bearer token | Add analyst note |\n| GET | /api/v1/events/{id}/notes | Bearer token | List analyst notes |\n| GET | /dashboard | Local operator UI | Dashboard; API calls require bearer token |
+| GET | /api/v1/events | Bearer token | List events; supports limit, offset, severity, triage_status, event_type, and q filters |
+| GET | /api/v1/summary | Bearer token | Severity and triage-status counts |
+| PATCH | /api/v1/events/{id}/status | Bearer token | Update triage status |
+| POST | /api/v1/events/{id}/notes | Bearer token | Add analyst note |
+| GET | /api/v1/events/{id}/notes | Bearer token | List analyst notes |
+| GET | /dashboard | Local operator UI | Dashboard; API calls require bearer token |
+
+Event-list query parameters:
+- `limit`: 1–200 results per request (default 50).
+- `offset`: zero-based pagination offset (default 0).
+- `severity`: optional severity filter.
+- `triage_status`: optional `new`, `investigating`, or `resolved` filter.
+- `event_type`: optional event-type filter; surrounding whitespace and letter case are normalized.
+- `q`: optional case-insensitive search across title, source, and description. Unicode case-folding is used for non-ASCII text.
+
+The dashboard applies these filters on the server and provides Previous/Next pagination. Summary counts cover all stored events, not just the current page.
 
 Allowed event types: failed_login, malware_detected, suspicious_process, firewall_block, configuration_change, data_exfiltration_suspected, and other. Classification is a starter rule, not proof an incident occurred.
+
+## Database backup verification
+
+Create a consistent backup to a new path in an existing directory:
+
+    python -m darkwatch.backup --source .\\data\\darkwatch.db --destination .\\data\\backups\\darkwatch-backup.db
+
+The utility refuses to overwrite an existing destination and verifies SQLite integrity, foreign-key consistency, and event/audit/note counts. The automated test uses synthetic data; perform a deployment-specific restore drill before relying on backups.
 
 ## Test
     python -m pytest -q
@@ -70,7 +105,14 @@ Allowed event types: failed_login, malware_detected, suspicious_process, firewal
 A phase is complete only when implementation, tests, and review evidence support that claim. Roadmap items are not current capabilities.
 
 ## Security reporting
-Do not include credentials, tokens, personal data, or sensitive production logs in public issues. Privately contact the repository maintainer about suspected vulnerabilities.
+Follow the private vulnerability-reporting process in [SECURITY.md](SECURITY.md). Do not include credentials, tokens, personal data, or sensitive production logs in public issues.
+
+## Threat model
+
+Review [THREAT_MODEL.md](THREAT_MODEL.md) for the initial repository-based threat model and documented residual risks. It is a draft, not an independent assessment or deployment approval.
+
+## Deployment guidance
+Review [DEPLOYMENT.md](DEPLOYMENT.md) before any deployment. The current service remains a development foundation and must not be exposed directly to the public internet.
 
 ## License
 MIT. See LICENSE.
