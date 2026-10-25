@@ -116,6 +116,12 @@ def init_db() -> None:
         applied = {
             row["version"] for row in db.execute("SELECT version FROM schema_migrations")
         }
+        latest_supported_version = 5
+        if applied and max(applied) > latest_supported_version:
+            raise RuntimeError(
+                f"Database schema version {max(applied)} is newer than this application "
+                f"supports (maximum {latest_supported_version}); refusing to continue."
+            )
 
         if 1 not in applied:
             db.execute("""CREATE TABLE IF NOT EXISTS security_events (
