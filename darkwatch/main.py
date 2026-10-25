@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Literal
 
@@ -548,6 +548,46 @@ def list_events(
     sql += " ORDER BY id DESC LIMIT ? OFFSET ?"; params.extend([limit, offset])
     with db_session() as db:
         return [row_to_event(r) for r in db.execute(sql,params).fetchall()]
+
+
+@app.get("/api/v1/events/{event_id}/duplicates", tags=["events"], dependencies=[Depends(require_api_token)])
+def potential_duplicates(
+    event_id: int,
+    window_minutes: int = Query(default=1440, ge=1, le=10080),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    """Return review-only duplicate candidates; never suppress or alter stored events."""
+    with db_session() as db:
+        event = get_event(db, event_id)
+        # Without a source IP, the match would be too broad to safely suggest.
+        if event["source_ip"] is None:
+            return {
+                "event_id": event_id,
+                "window_minutes": window_minutes,
+                "matching_rule": "source + event_type + normalized title + source_ip",
+                "candidates": [],
+                "message": "No candidates suggested because this event has no source_ip.",
+            }
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
+        rows = db.execute(
+            """SELECT * FROM security_events
+               WHERE id != ? AND source = ? AND event_type = ? AND source_ip = ?
+                 AND created_at >= ?
+               ORDER BY id DESC LIMIT ?""",
+            (event_id, event["source"], event["event_type"], event["source_ip"], cutoff, min(1000, limit * 10)),
+        ).fetchall()
+        normalized_title = " ".join(event["title"].casefold().split())
+        candidates = [
+            row_to_event(row) for row in rows
+            if " ".join(row["title"].casefold().split()) == normalized_title
+        ][:limit]
+        return {
+            "event_id": event_id,
+            "window_minutes": window_minutes,
+            "matching_rule": "source + event_type + normalized title + source_ip",
+            "candidates": candidates,
+            "message": "Candidates are suggestions for analyst review, not confirmed duplicates.",
+        }
 
 
 @app.patch("/api/v1/events/{event_id}/status", response_model=EventOut, tags=["triage"], dependencies=[Depends(require_api_token)])
